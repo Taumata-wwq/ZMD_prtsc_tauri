@@ -1,0 +1,5 @@
+#include <windows.h>
+
+// RT_MANIFEST 资源（类型 24，ID 1）
+// 引用 app.manifest 文件，编译时嵌入到 exe 中
+1 24 "app.manifest"

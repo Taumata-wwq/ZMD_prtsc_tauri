@@ -1,0 +1,50 @@
+[package]
+name = "zmd-prtsc-tauri"
+version = "3.0.0"
+description = "终末地俯瞰模式截图工具"
+authors = ["Taumata"]
+edition = "2021"
+
+[lib]
+name = "zmd_prtsc_tauri_lib"
+# 桌面端只需 staticlib + rlib；不包含 cdylib 是因为 MinGW 工具链对 cdylib 的
+# 导出符号数有 65535 上限，而 windows crate 等依赖会让导出表远超此限制。
+# 若未来需要 Android/iOS 移动端，可单独为移动 target 加回 cdylib。
+crate-type = ["staticlib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+image = "0.25"
+rayon = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_System_Console",
+    "Win32_System_Registry",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_HiDpi",
+    "Win32_Security"
+] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"

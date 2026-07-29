@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!-- 任务1+5：要求管理员权限，解决 UIPI（用户界面特权隔离）问题
+       当终末地游戏以管理员权限运行时，非管理员进程无法向其发送输入事件，
+       也无法注册能拦截游戏焦点的全局热键（F3）。通过 manifest 强制提权，
+       使应用启动时即为管理员权限，与游戏同级别。 -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <!-- DPI 感知（避免高 DPI 缩放下坐标计算错误） -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
+  <!-- 兼容性声明 -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50615baa}"/>
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6a0a78a}"/>
+    </application>
+  </compatibility>
+</assembly>
