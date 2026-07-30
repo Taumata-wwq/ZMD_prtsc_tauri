@@ -1,4 +1,4 @@
-//! 输入模拟（SendInput + 中键拖拽）
+//! 高层输入 API：提供 do_scroll、refresh_view、move_camera 等平台无关接口
 
 use std::thread;
 use std::time::Duration;
@@ -30,7 +30,7 @@ pub enum CameraDirection {
 }
 
 /// 计算相机拖拽的起止坐标
-pub fn calc_drag_coords(
+fn calc_drag_coords(
     direction: CameraDirection,
     drag_distance: (i32, i32),
     client_left: i32,
@@ -57,6 +57,7 @@ pub fn calc_drag_coords(
 }
 
 /// 执行相机移动（SendInput + 中键拖拽 + 随机稳定延迟）
+#[allow(clippy::too_many_arguments)]
 pub fn move_camera(
     direction: CameraDirection,
     drag_distance: (i32, i32),
@@ -100,7 +101,7 @@ pub fn do_scroll<F>(
         if !is_running() {
             return;
         }
-        // 原 -120 滚动量过大，-3 仍然偏大，改为 -1（每次仅 1 格 WHEEL_DELTA）
+        // 每次仅 1 格 WHEEL_DELTA，避免滚动过大
         input_win::sendinput_scroll(-1);
         thread::sleep(Duration::from_millis(150));
     }
@@ -118,7 +119,7 @@ pub fn refresh_view(
     let start_y = window_top + margin_bottom;
     let end_x = start_x + 300;
     let end_y = start_y + 300;
-    // 往返拖拽：end → start → end（复刻 Python 原版的拖回去步骤）
+    // 往返拖拽：end → start → end
     input_win::drag_middle_sendinput_roundtrip(end_x, end_y, start_x, start_y, 0.05);
     thread::sleep(Duration::from_millis(50));
 }

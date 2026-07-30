@@ -5,12 +5,6 @@ use tauri::State;
 use crate::error::AppResult;
 use crate::services::persistence::DbState;
 
-/// 获取单个设置值
-#[tauri::command]
-pub fn get_setting(db: State<'_, DbState>, key: String) -> AppResult<Option<String>> {
-    db.get_setting(&key)
-}
-
 /// 设置单个值
 #[tauri::command]
 pub fn set_setting(db: State<'_, DbState>, key: String, value: String) -> AppResult<()> {
@@ -30,4 +24,13 @@ pub fn set_many_settings(db: State<'_, DbState>, entries: HashMap<String, String
         db.set_setting(&k, &v)?;
     }
     Ok(())
+}
+
+/// 重置所有数据
+/// - 清空 region_config、app_setting、window_state，重新写入默认值
+/// - 若 include_history=true，同时清空 capture_session 表
+/// - 不删除磁盘文件，仅重置数据库
+#[tauri::command]
+pub fn reset_data(db: State<'_, DbState>, include_history: bool) -> AppResult<()> {
+    db.reset_data(include_history)
 }

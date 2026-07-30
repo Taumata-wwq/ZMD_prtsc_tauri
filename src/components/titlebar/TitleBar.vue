@@ -1,6 +1,5 @@
 <template>
   <header class="titlebar" data-tauri-drag-region>
-    <!-- 左侧：图标 + 应用名 + 版本号 -->
     <div class="tb-title" data-tauri-drag-region>
       <span class="tb-icon" data-tauri-drag-region>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -9,14 +8,17 @@
           <circle cx="12" cy="13" r="4" />
         </svg>
       </span>
-      <span class="tb-name">终末地截图工具</span>
-      <span class="tb-version">v3.0.0</span>
+      <span class="tb-name">{{ t('titlebar.appName') }}</span>
+      <span class="tb-version">{{ APP_VERSION }}</span>
+      <ColorPicker
+        :model-value="accentColor"
+        class="tb-accent-picker"
+        @update:model-value="onAccentChange"
+      />
     </div>
 
-    <!-- 中间：占满剩余空间的可拖拽区 -->
     <div class="tb-drag-spacer" data-tauri-drag-region="" />
 
-    <!-- 右侧：主题切换 + 窗口控制按钮（主题移到标题栏） -->
     <div class="tb-actions">
       <button
         class="tb-btn tb-theme"
@@ -25,7 +27,6 @@
         :aria-label="theme === 'dark' ? t('titlebar.themeToggleLight') : t('titlebar.themeToggleDark')"
         @click="toggleTheme"
       >
-        <!-- 深色主题显示"月亮"图标，浅色主题显示"太阳"图标 -->
         <svg v-if="theme === 'dark'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
@@ -86,7 +87,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import {
   setAlwaysOnTop,
   minimizeWindow,
@@ -96,26 +97,44 @@ import {
 import { useSettingsStore } from '@/stores/settings.store'
 import { useI18n } from '@/composables/useI18n'
 import type { AppSettings } from '@/types'
+import ColorPicker from '@/components/ColorPicker.vue'
+import { adjustColor } from '@/utils/color'
+import { APP_VERSION } from '@/constants'
 
 const settingsStore = useSettingsStore()
 const { t } = useI18n()
 
-/** 窗口是否处于置顶状态 */
 const alwaysOnTop = ref(false)
 
-/** 主题 */
-const theme = ref<'dark' | 'light'>('dark')
+/** 主题：从 settingsStore 派生，避免多处 ref 不同步 */
+const theme = computed<'dark' | 'light'>(() => settingsStore.settings?.theme ?? 'dark')
+
+/** 主题色：跟随 settings 同步，用户选择时通过 onAccentChange 持久化 */
+const accentColor = computed<string>(() => settingsStore.settings?.accent_color ?? '#00b5e5')
+
+watch(accentColor, (hex) => applyAccent(hex), { immediate: true })
+
+/** 主题色变更：持久化到 settings（CSS 变量由 watch 自动同步） */
+async function onAccentChange(color: string) {
+  try {
+    await settingsStore.update('accent_color', color)
+  } catch (err) {
+    console.error('[TitleBar] 持久化主题色失败:', err)
+  }
+}
+
+function applyAccent(hex: string) {
+  const root = document.documentElement
+  root.style.setProperty('--accent', hex)
+  root.style.setProperty('--accent-hover', adjustColor(hex, -18))
+  root.style.setProperty('--accent-light', adjustColor(hex, 0, 0.18))
+}
 
 onMounted(async () => {
   try {
     alwaysOnTop.value = await getAlwaysOnTop()
   } catch (err) {
     console.warn('[TitleBar] 读取置顶状态失败:', err)
-  }
-  // 同步当前主题（settingsStore 已在 App.vue 加载）
-  if (settingsStore.settings) {
-    theme.value = settingsStore.settings.theme
-    document.documentElement.dataset.theme = settingsStore.settings.theme
   }
 })
 
@@ -129,11 +148,9 @@ async function toggleAlwaysOnTop() {
   }
 }
 
-/** 切换主题：立即应用到 DOM 并持久化到 settings */
+/** 切换主题：只更新 settingsStore，DOM 同步由 App.vue 的 watch 负责 */
 async function toggleTheme() {
   const next: AppSettings['theme'] = theme.value === 'dark' ? 'light' : 'dark'
-  theme.value = next
-  document.documentElement.dataset.theme = next
   try {
     await settingsStore.update('theme', next)
   } catch (err) {
@@ -201,6 +218,10 @@ async function onClose() {
   font-weight: 400;
 }
 
+.tb-accent-picker {
+  margin-left: 4px;
+}
+
 .tb-drag-spacer {
   flex: 1;
   height: 100%;
@@ -233,14 +254,10 @@ async function onClose() {
   color: var(--text-primary);
 }
 
-.tb-btn.active {
-  color: var(--accent);
-  background: var(--accent-light);
-}
-
+.tb-btn.active,
 .tb-btn.active:hover {
-  background: var(--accent-light);
   color: var(--accent);
+  background: var(--accent-light);
 }
 
 .tb-close:hover {

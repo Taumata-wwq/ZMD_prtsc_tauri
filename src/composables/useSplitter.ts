@@ -2,13 +2,9 @@ import { ref, onMounted, onBeforeUnmount, onDeactivated } from 'vue'
 import type { Ref } from 'vue'
 
 interface SplitterOptions {
-  /** localStorage 键名 */
   storageKey: string
-  /** 默认宽度 */
   defaultWidth: number
-  /** 最小宽度 */
   minWidth: number
-  /** 最大宽度 */
   maxWidth: number
   /** 分栏容器选择器，用于在 mousemove 中通过 getBoundingClientRect 计算相对位置 */
   containerSelector: string
@@ -47,12 +43,10 @@ export function useSplitter(options: SplitterOptions): {
 
   function onMouseMove(e: MouseEvent) {
     if (!isDragging.value) return
-    // 计算新宽度：鼠标 X 位置 相对于分栏容器左侧
     const container = document.querySelector(containerSelector) as HTMLElement | null
     if (!container) return
     const rect = container.getBoundingClientRect()
     const newWidth = e.clientX - rect.left
-    // clamp 到 [minWidth, maxWidth]
     width.value = Math.min(maxWidth, Math.max(minWidth, newWidth))
   }
 
@@ -63,7 +57,6 @@ export function useSplitter(options: SplitterOptions): {
     document.body.style.cursor = ''
     window.removeEventListener('mousemove', onMouseMove)
     window.removeEventListener('mouseup', onMouseUp)
-    // 持久化
     try {
       localStorage.setItem(storageKey, String(width.value))
     } catch {
@@ -74,7 +67,7 @@ export function useSplitter(options: SplitterOptions): {
   function onMouseDown(e: MouseEvent) {
     if (e.button !== 0) return
     isDragging.value = true
-    // 拖拽期间禁用文本选择（避免选中配置面板内容）
+    // 拖拽期间禁用文本选择，避免选中配置面板内容
     document.body.style.userSelect = 'none'
     document.body.style.cursor = 'col-resize'
     window.addEventListener('mousemove', onMouseMove)
@@ -82,12 +75,11 @@ export function useSplitter(options: SplitterOptions): {
     e.preventDefault()
   }
 
-  // 进入视图时自动恢复宽度
   onMounted(() => {
     loadWidth()
   })
 
-  // 防御性清理（若组件在拖拽中被卸载）
+  // 防御性清理：组件在拖拽中被卸载时移除残留监听
   onBeforeUnmount(() => {
     window.removeEventListener('mousemove', onMouseMove)
     window.removeEventListener('mouseup', onMouseUp)
@@ -95,7 +87,7 @@ export function useSplitter(options: SplitterOptions): {
     document.body.style.cursor = ''
   })
 
-  // keep-alive 切换时清理拖拽状态（避免鼠标事件泄漏到其他视图）
+  // keep-alive 切换时清理拖拽状态，避免鼠标事件泄漏到其他视图
   onDeactivated(() => {
     window.removeEventListener('mousemove', onMouseMove)
     window.removeEventListener('mouseup', onMouseUp)

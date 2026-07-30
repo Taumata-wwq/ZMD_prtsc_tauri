@@ -1,9 +1,7 @@
 node_modules
 dist
-dist-electron
 src-tauri/target
 src-tauri/gen
-target_check
 # 资源编译产物（windres / rc.exe 生成）
 src-tauri/app_manifest.o
 src-tauri/app.res

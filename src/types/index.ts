@@ -1,6 +1,5 @@
-// 类型定义：与 Rust models 结构体字段名一致（snake_case）
+/** 类型定义：与 Rust models 结构体字段名一致（snake_case） */
 
-// 区域配置（对应 Rust RegionConfig）
 export interface RegionConfig {
   id?: number
   name: string
@@ -19,11 +18,11 @@ export interface RegionConfig {
   template_ref: string | null
   target_w: number
   target_h: number
+  sub_map: string | null  // 大地图子地图名（"四号谷地"/"武陵"），仅 category="大地图" 时使用
   created_at: string
   updated_at: string
 }
 
-// 滚动模式（对应 Rust ScrollMode）
 export interface ScrollMode {
   id?: number
   name: string
@@ -31,39 +30,26 @@ export interface ScrollMode {
   is_default: boolean
 }
 
-// 基于基准数据的推导结果（对应 Rust DerivedFromBaseDto）
+/** 基于基准数据的推导结果 */
 export interface DerivedFromBase {
-  /** 单张截图宽（像素） */
   img_w: number
-  /** 单张截图高（像素） */
   img_h: number
-  /** 反推得到的目标总宽（像素，恒定） */
   target_w: number
-  /** 反推得到的目标总高（像素，恒定） */
   target_h: number
-  /** 夹紧后的实际行数（可能与 target_rows 不同） */
-  actual_rows: number
-  /** 夹紧后的实际列数（可能与 target_cols 不同） */
-  actual_cols: number
-  /** 最终 drag_x（像素） */
+  actual_rows: number  // 夹紧后的实际行数（可能与 target_rows 不同）
+  actual_cols: number  // 夹紧后的实际列数（可能与 target_cols 不同）
   drag_x: number
-  /** 最终 drag_y（像素） */
   drag_y: number
-  /** 最终 overlap_x（0.0-1.0） */
-  overlap_x: number
-  /** 最终 overlap_y（0.0-1.0） */
-  overlap_y: number
-  /** 是否发生了夹紧（actual_rows/cols 与 target 不一致） */
-  clamped: boolean
+  overlap_x: number  // 0.0-1.0
+  overlap_y: number  // 0.0-1.0
+  clamped: boolean   // actual_rows/cols 与 target 不一致时为 true
 }
 
-// 9 次数推导结果（对应 Rust AllCountsResultDto）
-// 索引 0-8 对应 "0次" 到 "8次"
+/** 9 次数推导结果（索引 0-8 对应 "0次" 到 "8次"） */
 export interface AllCountsResult {
   counts: DerivedFromBase[]
 }
 
-// 截图会话（对应 Rust CaptureSession）
 export interface CropBox {
   x: number
   y: number
@@ -80,45 +66,45 @@ export interface CaptureSession {
   grid_rows?: number | null
   grid_cols?: number | null
   total_shots?: number | null
-  status: string  // SessionStatus 字符串值；Rust 端存储为 String
+  status: string
   original_path?: string | null
   exported_path?: string | null
-  crop_box?: string | null  // JSON 字符串：JSON.stringify(CropBox)；与 Rust Option<String> 对齐
+  thumbnail_path?: string | null
+  crop_box?: string | null
   output_format?: string | null
   jpg_quality?: number | null
 }
 
-// 应用设置（对应 Rust app_setting 表）
 export interface AppSettings {
   theme: 'dark' | 'light'
-  language: 'zh' | 'en'  // UI 语言（中英文切换）
-  output_format: 'JPG' | 'PNG'  // Rust 默认值 "JPG"（大写）
-  jpg_quality: number  // 1-100
-  output_folder: string
-  stabilize_delay: number  // 秒（浮点），默认 0.1
-  screenshot_delay: number  // 秒（浮点），默认 0.1
-  drag_duration: number  // 秒（浮点），默认 0.05
+  language: 'zh' | 'en'
+  output_format: 'JPG' | 'PNG'
+  jpg_quality: number
+  original_folder: string
+  screenshot_folder: string
+  thumbnail_folder: string
+  stabilize_delay: number
+  screenshot_delay: number
+  drag_duration: number
   drag_margin_bottom: number
   drag_margin_left: number
   capture_offset_y: number
-  // overlap 硬约束范围（用于 derive_from_base 夹紧行列数）
-  overlap_min: number  // 比例，默认 0.0（允许 0% 重叠）
-  overlap_max: number  // 比例，默认 0.5（最大 50% 重叠）
-  // 自定义导出文件名格式
+  overlap_min: number
+  overlap_max: number
   filename_pattern: string
   last_region: string
   last_scroll_mode: string
   last_aspect_ratio: string
   last_rows: number
   last_cols: number
-  // 开始截图后是否最小化窗口
   minimize_on_capture: boolean
+  accent_color: string
+  last_large_map_custom: boolean
 }
 
-// 应用设置的所有键名（用于类型安全的 keyof 操作）
+/** 应用设置的所有键名（用于类型安全的 keyof 操作） */
 export type AppSettingKey = keyof AppSettings
 
-// 截图事件与状态
 export interface CaptureProgress {
   current: number
   total: number
@@ -132,14 +118,7 @@ export interface CaptureLog {
   timestamp: string
 }
 
-export interface CaptureStatus {
-  is_running: boolean
-  current: number
-  total: number
-  region?: string
-}
-
-// capture:status 事件 payload
+/** capture:status 事件 payload */
 export interface CaptureStatusEvent {
   is_running: boolean
   current: number

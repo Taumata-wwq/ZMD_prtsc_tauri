@@ -1,54 +1,50 @@
-// 历史记录 Store
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api'
 import type { CaptureSession } from '@/types'
+import { useAutoClearError } from '@/composables/useAutoClearError'
 
 export const useHistoryStore = defineStore('history', () => {
   const sessions = ref<CaptureSession[]>([])
   const loading = ref(false)
-  const error = ref<string | null>(null)
+  const { error, setError } = useAutoClearError()
 
-  /**
-   * 加载历史会话
-   *
-   * @param limit 会话条数上限（undefined 使用 Rust 默认值）
-   */
-  async function load(limit?: number) {
+  async function load() {
     loading.value = true
-    error.value = null
     try {
-      sessions.value = await api.listSessions(limit)
+      sessions.value = await api.listSessions()
     } catch (e) {
-      error.value = e instanceof Error ? e.message : String(e)
+      setError(e instanceof Error ? e.message : String(e))
       throw e
     } finally {
       loading.value = false
     }
   }
 
-  /** 清空所有历史记录 */
-  async function clear() {
-    loading.value = true
-    error.value = null
+  /** 重新加载历史记录列表，错误已写入 error 状态，不再向外抛出 */
+  async function refresh() {
     try {
-      await api.clearHistory()
-      sessions.value = []
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : String(e)
-      throw e
-    } finally {
-      loading.value = false
+      await load()
+    } catch {
+      // ignore
     }
+  }
+
+  async function deleteSession(
+    id: number,
+    deleteOriginal?: boolean,
+    deleteScreenshot?: boolean,
+  ) {
+    await api.deleteSession(id, deleteOriginal ?? false, deleteScreenshot ?? false)
+    await refresh()
   }
 
   return {
-    // state
     sessions,
     loading,
     error,
-    // actions
     load,
-    clear,
+    refresh,
+    deleteSession,
   }
 })

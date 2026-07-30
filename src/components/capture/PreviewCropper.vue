@@ -1,6 +1,5 @@
 <template>
   <div class="preview-cropper">
-    <!-- 画布区域 -->
     <div
       ref="containerRef"
       class="cropper-canvas"
@@ -29,7 +28,6 @@
           @load="onImgLoad"
           draggable="false"
         />
-        <!-- 选区框 -->
         <!-- 绘制中且尺寸过小时不显示，避免点击瞬间 box-shadow 遮暗整图导致闪烁 -->
         <div
           v-if="selection && !(mode === 'drawing' && selection.w < 5 / zoom && selection.h < 5 / zoom)"
@@ -38,12 +36,10 @@
           :class="{ 'cursor-move': mode === 'idle' }"
           @mousedown.stop="onSelectionMouseDown"
         >
-          <!-- 四角手柄 -->
           <div class="handle handle-nw" @mousedown.stop="onHandleDown($event, 'nw')"></div>
           <div class="handle handle-ne" @mousedown.stop="onHandleDown($event, 'ne')"></div>
           <div class="handle handle-sw" @mousedown.stop="onHandleDown($event, 'sw')"></div>
           <div class="handle handle-se" @mousedown.stop="onHandleDown($event, 'se')"></div>
-          <!-- 四边手柄 -->
           <div class="handle handle-n" @mousedown.stop="onHandleDown($event, 'n')"></div>
           <div class="handle handle-s" @mousedown.stop="onHandleDown($event, 's')"></div>
           <div class="handle handle-w" @mousedown.stop="onHandleDown($event, 'w')"></div>
@@ -55,10 +51,10 @@
       <div v-if="exporting || exportDone" class="export-overlay">
         <div v-if="exporting" class="spinner" />
         <p class="export-text">{{ exportDone ? t('capture.exportDone') : t('capture.exporting') }}</p>
+        <p v-if="exportDone && exportPath" class="export-path" :title="exportPath">{{ exportPath }}</p>
       </div>
     </div>
 
-    <!-- 底部状态栏：缩放比例 + 选区尺寸 + 截图信息 -->
     <div class="status-bar">
       <span class="status-item">{{ Math.round(zoom * 100) }}%</span>
       <span v-if="selection" class="status-item">{{ sizeTipText }}</span>
@@ -70,26 +66,27 @@
 </template>
 
 <script setup lang="ts">
-// PreviewCropper：截图预览区裁剪交互
-// 左键拖拽=选区，中键拖拽=平移，滚轮=缩放，四角/四边手柄=调整大小
-import { ref, computed, onMounted, onBeforeUnmount, onActivated, nextTick } from 'vue'
+// PreviewCropper：截图预览区裁剪交互（左键=选区，中键=平移，滚轮=缩放，手柄=调整大小）
+// pan/zoom 见 useImagePanZoom，选区拖拽见 useSelectionDrag，路径构建见 utils/exportPath
+import { ref, computed } from 'vue'
 import { api } from '@/api'
 import { useCaptureStore } from '@/stores/capture.store'
 import { useSettingsStore } from '@/stores/settings.store'
 import { useI18n } from '@/composables/useI18n'
 import type { CropBox } from '@/types'
 import { appDataDir, join } from '@tauri-apps/api/path'
+import { formatTimestamp } from '@/utils/datetime'
+import { useImagePanZoom } from '@/composables/useImagePanZoom'
+import { useSelectionDrag } from '@/composables/useSelectionDrag'
+import { buildSavePath as buildSavePathUtil } from '@/utils/exportPath'
 
 interface Props {
   /** 图像 URL（来自 convertFileSrc，由父组件从磁盘路径转换） */
   imageUrl: string
-  /** 截图来源：'auto' 自动拼接 | 'manual' 手动单张 */
-  source?: 'auto' | 'manual'
   /** 当前会话 ID（用于回写 session 表） */
   sessionId?: number | null
 }
 const props = withDefaults(defineProps<Props>(), {
-  source: 'auto',
   sessionId: null,
 })
 
@@ -101,74 +98,58 @@ const captureStore = useCaptureStore()
 const settingsStore = useSettingsStore()
 const { t } = useI18n()
 
-// ---------------------------------------------------------------------------
-// DOM refs
-// ---------------------------------------------------------------------------
+// 画布容器 ref（供两个 composable 共用）
 const containerRef = ref<HTMLDivElement | null>(null)
 
-// ---------------------------------------------------------------------------
-// 图像状态
-// ---------------------------------------------------------------------------
-const imgNaturalWidth = ref(0)
-const imgNaturalHeight = ref(0)
-const imgLoaded = ref(false)
+// 图像平移缩放（同时持有 mode / dragStart / spacePressed 等共享交互状态）
+const panzoom = useImagePanZoom({ containerRef })
+const {
+  imgNaturalWidth,
+  imgNaturalHeight,
+  zoom,
+  imgW,
+  imgH,
+  panX,
+  panY,
+  mode,
+  spacePressed,
+  onImgLoad,
+  clientToImageCoords,
+  isInsideImage,
+  startPanning,
+  handlePanning,
+  onWheel,
+} = panzoom
 
-/** 缩放因子（1 = 原图尺寸，0.5 = 缩小一半） */
-const zoom = ref(1)
-/** 图像显示尺寸（naturalWidth * zoom） */
-const imgW = computed(() => imgNaturalWidth.value * zoom.value)
-const imgH = computed(() => imgNaturalHeight.value * zoom.value)
+// 选区拖拽（drawing / moving / resizing + handles）
+const {
+  selection,
+  onCanvasMouseDown,
+  onAuxClick,
+  onSelectionMouseDown,
+  onHandleDown,
+  clearSelection,
+} = useSelectionDrag({
+  containerRef,
+  mode,
+  dragStart: panzoom.dragStart,
+  spacePressed,
+  zoom,
+  imgNaturalWidth,
+  imgNaturalHeight,
+  panX,
+  panY,
+  clientToImageCoords,
+  isInsideImage,
+  startPanning,
+  handlePanning,
+})
 
-/** 图像平移（容器坐标系） */
-const panX = ref(0)
-const panY = ref(0)
-
-/** 自适应缩放（图像完全可见） */
-let fitZoom = 1
-
-// ---------------------------------------------------------------------------
-// 选区状态（原图像素坐标）
-// ---------------------------------------------------------------------------
-interface Selection {
-  x: number
-  y: number
-  w: number
-  h: number
-}
-const selection = ref<Selection | null>(null)
-
-/** 交互模式 */
-type Mode = 'idle' | 'drawing' | 'moving' | 'resizing' | 'panning-ready' | 'panning'
-const mode = ref<Mode>('idle')
-/** resize 时记录哪个角/边 */
-type Handle = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'w' | 'e'
-let resizeHandle: Handle = 'se'
-/** 交互起始状态（mousedown 时记录） */
-let dragStart = {
-  mouseImgX: 0,
-  mouseImgY: 0,
-  selX: 0,
-  selY: 0,
-  selW: 0,
-  selH: 0,
-  panX: 0,
-  panY: 0,
-  mouseX: 0,
-  mouseY: 0,
-}
-
-/** 空格键按下状态（空格+左键拖拽画布） */
-const spacePressed = ref(false)
-
-// ---------------------------------------------------------------------------
-// 导出状态
-// ---------------------------------------------------------------------------
 const exporting = ref(false)
 const exportDone = ref(false)
+/** 最近一次导出路径（用于在遮罩中显示） */
+const exportPath = ref('')
 
-// ---------------------------------------------------------------------------
-// 选区渲染样式
-// ---------------------------------------------------------------------------
 const selectionStyle = computed(() => {
   const s = selection.value
   if (!s) return {}
@@ -188,345 +169,6 @@ const sizeTipText = computed(() => {
   return `${Math.round(s.w)}×${Math.round(s.h)} px  ${pctW}%×${pctH}%`
 })
 
-// =========================================================================
-// 图像加载与自适应
-// =========================================================================
-function onImgLoad(e: Event) {
-  const img = e.target as HTMLImageElement
-  imgNaturalWidth.value = img.naturalWidth
-  imgNaturalHeight.value = img.naturalHeight
-  imgLoaded.value = true
-  resetView()
-}
-
-function computeFitZoom(): number {
-  const container = containerRef.value
-  if (!container || imgNaturalWidth.value === 0) return 1
-  const cw = container.clientWidth - 24
-  const ch = container.clientHeight - 24
-  if (cw <= 0 || ch <= 0) return 1
-  const sx = cw / imgNaturalWidth.value
-  const sy = ch / imgNaturalHeight.value
-  return Math.min(sx, sy, 1)
-}
-
-function resetView() {
-  fitZoom = computeFitZoom()
-  zoom.value = fitZoom
-  centerImage()
-}
-
-function centerImage() {
-  const container = containerRef.value
-  if (!container) return
-  const cw = container.clientWidth
-  const ch = container.clientHeight
-  // 防御 keep-alive 切换时容器尺寸为 0，导致 panX/panY 计算为负值
-  if (cw <= 0 || ch <= 0) return
-  panX.value = (cw - imgW.value) / 2
-  panY.value = (ch - imgH.value) / 2
-}
-
-// =========================================================================
-// 坐标转换
-// =========================================================================
-function clientToImageCoords(clientX: number, clientY: number): { x: number; y: number } {
-  const container = containerRef.value
-  if (!container) return { x: 0, y: 0 }
-  const rect = container.getBoundingClientRect()
-  const cx = clientX - rect.left - panX.value
-  const cy = clientY - rect.top - panY.value
-  return { x: cx / zoom.value, y: cy / zoom.value }
-}
-
-// =========================================================================
-// 鼠标交互
-// =========================================================================
-
-function onCanvasMouseDown(e: MouseEvent) {
-  containerRef.value?.focus()
-  // 中键 → 平移模式
-  if (e.button === 1) {
-    startPanning(e.clientX, e.clientY)
-    e.preventDefault()
-    return
-  }
-  if (e.button !== 0) return
-
-  // 空格+左键 → 平移画布
-  if (spacePressed.value) {
-    startPanning(e.clientX, e.clientY)
-    e.preventDefault()
-    return
-  }
-
-  const img = clientToImageCoords(e.clientX, e.clientY)
-  if (!isInsideImage(img.x, img.y)) return
-
-  mode.value = 'drawing'
-  selection.value = { x: img.x, y: img.y, w: 0, h: 0 }
-  dragStart = {
-    mouseImgX: img.x,
-    mouseImgY: img.y,
-    selX: img.x,
-    selY: img.y,
-    selW: 0,
-    selH: 0,
-    panX: panX.value,
-    panY: panY.value,
-    mouseX: e.clientX,
-    mouseY: e.clientY,
-  }
-  e.preventDefault()
-  startDragListeners()
-}
-
-function onAuxClick(e: MouseEvent) {
-  if (e.button === 1) {
-    e.preventDefault()
-  }
-}
-
-function startPanning(clientX: number, clientY: number) {
-  mode.value = 'panning'
-  dragStart = {
-    ...dragStart,
-    panX: panX.value,
-    panY: panY.value,
-    mouseX: clientX,
-    mouseY: clientY,
-  }
-  startDragListeners()
-}
-
-function onSelectionMouseDown(e: MouseEvent) {
-  if (e.button === 1) {
-    startPanning(e.clientX, e.clientY)
-    e.preventDefault()
-    return
-  }
-  if (e.button !== 0) return
-  if (!selection.value) return
-
-  if (spacePressed.value) {
-    startPanning(e.clientX, e.clientY)
-    e.preventDefault()
-    return
-  }
-
-  mode.value = 'moving'
-  const img = clientToImageCoords(e.clientX, e.clientY)
-  dragStart = {
-    ...dragStart,
-    mouseImgX: img.x,
-    mouseImgY: img.y,
-    selX: selection.value.x,
-    selY: selection.value.y,
-    selW: selection.value.w,
-    selH: selection.value.h,
-  }
-  e.preventDefault()
-  startDragListeners()
-}
-
-function onHandleDown(e: MouseEvent, handle: Handle) {
-  if (e.button !== 0) return
-  if (!selection.value) return
-
-  if (spacePressed.value) {
-    startPanning(e.clientX, e.clientY)
-    e.preventDefault()
-    e.stopPropagation()
-    return
-  }
-
-  mode.value = 'resizing'
-  resizeHandle = handle
-  const img = clientToImageCoords(e.clientX, e.clientY)
-  dragStart = {
-    ...dragStart,
-    mouseImgX: img.x,
-    mouseImgY: img.y,
-    selX: selection.value.x,
-    selY: selection.value.y,
-    selW: selection.value.w,
-    selH: selection.value.h,
-  }
-  e.preventDefault()
-  e.stopPropagation()
-  startDragListeners()
-}
-
-function onMouseMove(e: MouseEvent) {
-  if (mode.value === 'idle') return
-
-  if (mode.value === 'panning') {
-    const dx = e.clientX - dragStart.mouseX
-    const dy = e.clientY - dragStart.mouseY
-    panX.value = dragStart.panX + dx
-    panY.value = dragStart.panY + dy
-    return
-  }
-
-  const img = clientToImageCoords(e.clientX, e.clientY)
-  const curX = clamp(img.x, 0, imgNaturalWidth.value)
-  const curY = clamp(img.y, 0, imgNaturalHeight.value)
-
-  if (mode.value === 'drawing') {
-    const x = Math.min(dragStart.mouseImgX, curX)
-    const y = Math.min(dragStart.mouseImgY, curY)
-    const w = Math.abs(curX - dragStart.mouseImgX)
-    const h = Math.abs(curY - dragStart.mouseImgY)
-    selection.value = { x, y, w, h }
-  } else if (mode.value === 'moving' && selection.value) {
-    const dx = img.x - dragStart.mouseImgX
-    const dy = img.y - dragStart.mouseImgY
-    let newX = dragStart.selX + dx
-    let newY = dragStart.selY + dy
-    newX = clamp(newX, 0, imgNaturalWidth.value - dragStart.selW)
-    newY = clamp(newY, 0, imgNaturalHeight.value - dragStart.selH)
-    selection.value = {
-      x: newX,
-      y: newY,
-      w: dragStart.selW,
-      h: dragStart.selH,
-    }
-  } else if (mode.value === 'resizing' && selection.value) {
-    const dx = img.x - dragStart.mouseImgX
-    const dy = img.y - dragStart.mouseImgY
-    let { selX, selY, selW, selH } = dragStart
-    let newX = selX
-    let newY = selY
-    let newW = selW
-    let newH = selH
-    switch (resizeHandle) {
-      case 'nw':
-        newX = selX + dx
-        newY = selY + dy
-        newW = selW - dx
-        newH = selH - dy
-        break
-      case 'ne':
-        newY = selY + dy
-        newW = selW + dx
-        newH = selH - dy
-        break
-      case 'sw':
-        newX = selX + dx
-        newW = selW - dx
-        newH = selH + dy
-        break
-      case 'se':
-        newW = selW + dx
-        newH = selH + dy
-        break
-      case 'n':
-        newY = selY + dy
-        newH = selH - dy
-        break
-      case 's':
-        newH = selH + dy
-        break
-      case 'w':
-        newX = selX + dx
-        newW = selW - dx
-        break
-      case 'e':
-        newW = selW + dx
-        break
-    }
-    if (newW < 0) {
-      newX = newX + newW
-      newW = -newW
-    }
-    if (newH < 0) {
-      newY = newY + newH
-      newH = -newH
-    }
-    newX = Math.max(0, newX)
-    newY = Math.max(0, newY)
-    if (newX + newW > imgNaturalWidth.value) newW = imgNaturalWidth.value - newX
-    if (newY + newH > imgNaturalHeight.value) newH = imgNaturalHeight.value - newY
-    selection.value = { x: newX, y: newY, w: newW, h: newH }
-  }
-}
-
-function onMouseUp() {
-  if (mode.value === 'drawing' && selection.value) {
-    if (selection.value.w < 5 / zoom.value || selection.value.h < 5 / zoom.value) {
-      selection.value = null
-    }
-  }
-  mode.value = 'idle'
-  stopDragListeners()
-}
-
-// ---------------------------------------------------------------------------
-// 滚轮缩放
-// ---------------------------------------------------------------------------
-let pendingWheelEvent: WheelEvent | null = null
-let wheelRafId: number | null = null
-
-function applyWheel(e: WheelEvent) {
-  const container = containerRef.value
-  if (!container) return
-  const rect = container.getBoundingClientRect()
-  const mxContainer = e.clientX - rect.left
-  const myContainer = e.clientY - rect.top
-  const mxImg = (mxContainer - panX.value) / zoom.value
-  const myImg = (myContainer - panY.value) / zoom.value
-
-  const delta = -e.deltaY
-  const step = 0.1
-  const factor = delta > 0 ? 1 + step : 1 - step
-  let newZoom = zoom.value * factor
-  const minZoom = Math.max(0.05, fitZoom * 0.5)
-  const maxZoom = 5
-  newZoom = clamp(newZoom, minZoom, maxZoom)
-  if (newZoom === zoom.value) return
-
-  const newPanX = mxContainer - mxImg * newZoom
-  const newPanY = myContainer - myImg * newZoom
-
-  zoom.value = newZoom
-  panX.value = newPanX
-  panY.value = newPanY
-}
-
-function onWheel(e: WheelEvent) {
-  if (!imgLoaded.value) return
-  e.preventDefault()
-  pendingWheelEvent = e
-  if (wheelRafId === null) {
-    wheelRafId = requestAnimationFrame(() => {
-      wheelRafId = null
-      if (pendingWheelEvent) {
-        applyWheel(pendingWheelEvent)
-        pendingWheelEvent = null
-      }
-    })
-  }
-}
-
-// =========================================================================
-// 辅助函数
-// =========================================================================
-function clamp(v: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, v))
-}
-
-function isInsideImage(x: number, y: number): boolean {
-  return x >= 0 && y >= 0 && x <= imgNaturalWidth.value && y <= imgNaturalHeight.value
-}
-
-function clearSelection() {
-  selection.value = null
-  mode.value = 'idle'
-}
-
-// =========================================================================
-// 错误处理
-// =========================================================================
 function extractErrorMessage(e: unknown): string {
   if (e instanceof Error) return e.message
   if (typeof e === 'string') return e
@@ -549,9 +191,6 @@ function showError(prefix: string, e: unknown) {
   captureStore.setError(`${prefix}：${msg}`)
 }
 
-// =========================================================================
-// 导出（使用 source_path，使用 filename_pattern 自定义文件名）
-// =========================================================================
 async function getSourcePath(): Promise<string | null> {
   try {
     const path = await api.getPreviewPath()
@@ -563,84 +202,47 @@ async function getSourcePath(): Promise<string | null> {
   }
 }
 
-/** 生成时间戳：YYYYMMDD_HHMMSS */
-function timestamp(): string {
-  const d = new Date()
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return (
-    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
-    `_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-  )
-}
-
 /**
- * 拼装输出路径：使用 filename_pattern 设置项自定义文件名
- * 可用占位符：{timestamp} {region} {scrollMode}（{prefix} 仍兼容旧设置）
+ * 拼装保存裁剪路径：
+ *   - 目录使用 screenshot_folder（空则回退到 appDataDir/screenshots）
+ *   - 文件名使用 filename_pattern + '_crop' 后缀
+ *   - 扩展名由 output_format 决定
+ *   - 文件名冲突由 Rust 端 resolve_unique_path 自动添加 _1/_2 数字后缀
  */
-async function buildOutputPath(): Promise<{ path: string; format: string; ext: string }> {
+async function resolveSavePath(): Promise<{ path: string; format: string }> {
   const fmt = settingsStore.settings?.output_format ?? 'JPG'
-  const ext = fmt.toLowerCase()
-  const ts = timestamp()
-  const prefix = props.source === 'manual' ? 'manual' : 'stitched'
-  // 使用截图时锁定的区域和滚动次数（防止左侧变动导致命名错误）
+  const ts = formatTimestamp(new Date(), 'YYYYMMDD_HHMMSS')
   const region = captureStore.capturedRegion || ''
   const scrollMode = captureStore.capturedScrollMode || ''
 
   const pattern = settingsStore.settings?.filename_pattern || '{region}_{timestamp}_{scrollMode}'
-  const filename = pattern
-    .replace(/\{prefix\}/g, prefix)
-    .replace(/\{timestamp\}/g, ts)
-    .replace(/\{region\}/g, region)
-    .replace(/\{scrollMode\}/g, scrollMode)
-    + '.' + ext
+  const vars = {
+    prefix: 'stitched',
+    timestamp: ts,
+    region,
+    scrollMode,
+  }
 
-  let folder = settingsStore.settings?.output_folder ?? ''
+  let folder = settingsStore.settings?.screenshot_folder ?? ''
   if (!folder) {
     const dataDir = await appDataDir()
     folder = await join(dataDir, 'screenshots')
   }
-  const sep = folder.endsWith('/') || folder.endsWith('\\') ? '' : '/'
-  return { path: `${folder}${sep}${filename}`, format: fmt, ext }
+  const path = buildSavePathUtil(folder, pattern, vars, fmt, '_crop')
+  return { path, format: fmt }
 }
 
-/** 显示导出完成提示（2秒后自动消失） */
-function showExportDone() {
+/** 显示导出完成提示（3秒后自动消失，并清空路径） */
+function showExportDone(path: string) {
+  exportPath.value = path
   exportDone.value = true
   setTimeout(() => {
     exportDone.value = false
-  }, 2000)
+    exportPath.value = ''
+  }, 3000)
 }
 
-async function onExportOriginal() {
-  if (exporting.value) return
-  exporting.value = true
-  try {
-    const sourcePath = await getSourcePath()
-    if (!sourcePath) {
-      showError('导出失败', new Error('无法获取源图像路径，请重新截图'))
-      return
-    }
-    const { path, format } = await buildOutputPath()
-    const quality = settingsStore.settings?.jpg_quality ?? 95
-    const outPath = await api.exportImage(
-      sourcePath,
-      null,
-      format,
-      quality,
-      path,
-      props.sessionId,
-      null,
-    )
-    emit('exported', { path: outPath, cropped: false })
-    showExportDone()
-  } catch (e) {
-    showError('导出原图失败', e)
-  } finally {
-    exporting.value = false
-  }
-}
-
-async function onExportCropped() {
+async function onSaveCropped() {
   if (exporting.value) return
   const s = selection.value
   if (!s) return
@@ -648,7 +250,7 @@ async function onExportCropped() {
   try {
     const sourcePath = await getSourcePath()
     if (!sourcePath) {
-      showError('导出失败', new Error('无法获取源图像路径，请重新截图'))
+      showError('保存失败', new Error('无法获取源图像路径，请重新截图'))
       return
     }
     const crop: CropBox = {
@@ -661,7 +263,7 @@ async function onExportCropped() {
       showError('裁剪失败', new Error('选区尺寸无效'))
       return
     }
-    const { path, format } = await buildOutputPath()
+    const { path, format } = await resolveSavePath()
     const quality = settingsStore.settings?.jpg_quality ?? 95
     const cropBoxJson = JSON.stringify(crop)
     const outPath = await api.exportImage(
@@ -674,111 +276,16 @@ async function onExportCropped() {
       cropBoxJson,
     )
     emit('exported', { path: outPath, cropped: true })
-    showExportDone()
+    showExportDone(outPath)
   } catch (e) {
-    showError('裁剪后导出失败', e)
+    showError('保存裁剪失败', e)
   } finally {
     exporting.value = false
   }
 }
 
-// =========================================================================
-// 全局事件监听
-// =========================================================================
-function startDragListeners() {
-  window.addEventListener('mousemove', onMouseMove)
-  window.addEventListener('mouseup', onMouseUp)
-}
-
-function stopDragListeners() {
-  window.removeEventListener('mousemove', onMouseMove)
-  window.removeEventListener('mouseup', onMouseUp)
-}
-
-function onKeyDown(e: KeyboardEvent) {
-  if (e.code === 'Space' && !isEditableTarget(e.target)) {
-    spacePressed.value = true
-    e.preventDefault()
-  }
-}
-
-function onKeyUp(e: KeyboardEvent) {
-  if (e.code === 'Space') {
-    spacePressed.value = false
-  }
-}
-
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  const tag = target.tagName.toLowerCase()
-  return tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable
-}
-
-let resizeObserver: ResizeObserver | null = null
-
-onMounted(() => {
-  if (containerRef.value) {
-    resizeObserver = new ResizeObserver(() => {
-      if (!imgLoaded.value || mode.value !== 'idle') return
-      const container = containerRef.value
-      if (!container) return
-      const cw = container.clientWidth
-      const ch = container.clientHeight
-      // 防御 keep-alive 切换时容器尺寸为 0（隐藏状态），跳过避免错误重置
-      if (cw <= 0 || ch <= 0) return
-      const oldFitZoom = fitZoom
-      const newFitZoom = computeFitZoom()
-      if (newFitZoom <= 0) return
-      if (Math.abs(zoom.value - oldFitZoom) < 0.001) {
-        fitZoom = newFitZoom
-        zoom.value = newFitZoom
-        centerImage()
-        return
-      }
-      fitZoom = newFitZoom
-      const imgLeft = panX.value
-      const imgTop = panY.value
-      const imgRight = panX.value + imgW.value
-      const imgBottom = panY.value + imgH.value
-      if (imgRight < 0 || imgLeft > cw || imgBottom < 0 || imgTop > ch) {
-        centerImage()
-      }
-    })
-    resizeObserver.observe(containerRef.value)
-  }
-  window.addEventListener('keydown', onKeyDown)
-  window.addEventListener('keyup', onKeyUp)
-})
-
-// keep-alive 重新激活时，容器尺寸可能从 0 恢复为正常值
-// 等待 DOM 更新后重新计算 fitZoom 并保持图像居中
-onActivated(() => {
-  if (!imgLoaded.value) return
-  void nextTick(() => {
-    const container = containerRef.value
-    if (!container || container.clientWidth <= 0 || container.clientHeight <= 0) return
-    const newFitZoom = computeFitZoom()
-    if (newFitZoom <= 0) return
-    fitZoom = newFitZoom
-    zoom.value = newFitZoom
-    centerImage()
-  })
-})
-
-onBeforeUnmount(() => {
-  stopDragListeners()
-  if (resizeObserver) {
-    resizeObserver.disconnect()
-    resizeObserver = null
-  }
-  window.removeEventListener('keydown', onKeyDown)
-  window.removeEventListener('keyup', onKeyUp)
-})
-
-// 暴露方法供父组件调用
 defineExpose({
-  exportCropped: onExportCropped,
-  exportOriginal: onExportOriginal,
+  saveCropped: onSaveCropped,
   clearSelection,
   isExporting: exporting,
 })
@@ -885,17 +392,18 @@ defineExpose({
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  background: rgba(0, 0, 0, 0.75);
-  padding: 24px 40px;
+  background: rgba(0, 0, 0, 0.85);
+  padding: 28px 48px;
   border-radius: 8px;
-  z-index: 20;
+  z-index: 100;
+  pointer-events: none;
 }
 
 .export-overlay .spinner {
   width: 32px;
   height: 32px;
-  border: 3px solid var(--border);
-  border-top-color: var(--accent);
+  border: 3px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #ffffff;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -905,9 +413,24 @@ defineExpose({
 }
 
 .export-text {
-  color: var(--text-primary);
+  color: #ffffff;
   font-size: 14px;
+  font-weight: 500;
   margin: 0;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+}
+
+.export-path {
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 11px;
+  margin: 0;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Consolas", "Monaco", monospace;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
 /* 底部状态栏 */

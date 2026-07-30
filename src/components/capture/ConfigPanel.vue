@@ -4,11 +4,9 @@
 
     <template v-else>
       <section class="layer basic-layer">
-        <!-- 区域选择分两部分（主类/子名） -->
         <div class="field-group">
           <label class="field-label">{{ t('capture.region') }}</label>
           <div class="region-pair">
-            <!-- 主类选择（武陵/谷地/大地图/自定义） -->
             <select
               class="field-select"
               :value="currentCategory"
@@ -19,8 +17,21 @@
                 {{ cat }}
               </option>
             </select>
-            <!-- 子名选择（根据主类动态生成；大地图/自定义时禁用） -->
+            <!-- 大地图：子地图选择 -->
             <select
+              v-if="currentCategory === '大地图'"
+              class="field-select"
+              :value="currentLargeMapSubMap"
+              :disabled="captureStore.isRunning"
+              @change="onLargeMapSubMapChange"
+            >
+              <option v-for="sm in largeMapSubMaps" :key="sm" :value="sm">
+                {{ sm }}
+              </option>
+            </select>
+            <!-- 基建：子名选择 -->
+            <select
+              v-else
               class="field-select"
               :value="currentSubName"
               :disabled="captureStore.isRunning || !hasSubNames"
@@ -33,8 +44,24 @@
           </div>
         </div>
 
-        <!-- 滚动模式（大地图/自定义模式禁用，固定为0次） -->
-        <div class="field-group">
+        <!-- 大地图：子区域选择（自定义时 disabled） -->
+        <div v-if="currentCategory === '大地图'" class="field-group">
+          <label class="field-label">{{ t('capture.subRegion') }}</label>
+          <select
+            class="field-select"
+            :value="currentLargeMapArea"
+            :disabled="captureStore.isRunning || isLargeMapCustom"
+            @change="onLargeMapAreaChange"
+          >
+            <option v-if="isLargeMapCustom" value="">{{ t('capture.customRegion') }}</option>
+            <option v-else v-for="area in largeMapAreas" :key="area" :value="area">
+              {{ area }}
+            </option>
+          </select>
+        </div>
+
+        <!-- 滚动模式（仅基建模式显示） -->
+        <div v-else class="field-group">
           <label class="field-label">{{ t('capture.scrollMode') }}</label>
           <select
             class="field-select"
@@ -48,7 +75,7 @@
           </select>
         </div>
 
-        <!-- 网格大小 -->
+        <!-- 网格大小（自定义/大地图自定义可编辑，其他只读） -->
         <div class="field-group">
           <label class="field-label">{{ t('capture.gridSize') }}</label>
           <div class="number-pair">
@@ -76,7 +103,6 @@
           </div>
         </div>
 
-        <!-- 输出格式与质量 -->
         <div class="field-group">
           <label class="field-label">{{ t('capture.outputFormat') }}</label>
           <select
@@ -113,14 +139,14 @@ import { useConfigStore } from '@/stores/config.store'
 import { useSettingsStore } from '@/stores/settings.store'
 import { useCaptureStore } from '@/stores/capture.store'
 import { useI18n } from '@/composables/useI18n'
-import type { RegionConfig } from '@/types'
+import type { RegionConfig, AppSettingKey, AppSettings } from '@/types'
+import { buildRegionName, stripCategoryPrefix, getCategoryPrefix } from '@/utils/regionName'
 
 const configStore = useConfigStore()
 const settingsStore = useSettingsStore()
 const captureStore = useCaptureStore()
 const { t } = useI18n()
 
-/** 所有区域按 category 分组 */
 const regionsByCategory = computed<Record<string, string[]>>(() => {
   const map: Record<string, string[]> = {}
   for (const r of configStore.regions) {
@@ -145,117 +171,185 @@ const categories = computed<string[]>(() => {
   return list
 })
 
-/** 当前主类（从 currentRegionName 解析） */
+/** 当前主类：从 currentRegionName 解析，大地图子区域通过 regions 查找 */
 const currentCategory = computed<string>(() => {
   const name = configStore.currentRegionName
   if (!name) return categories.value[0] ?? ''
-  // 大地图/自定义：name 即 category
-  if (name === '大地图' || name === '自定义') return name
-  // 其他：<category>-<sub>
-  const idx = name.indexOf('-')
-  return idx > 0 ? name.substring(0, idx) : name
+  // 大地图子区域 name 不带前缀，如 "枢纽区"
+  const region = configStore.regions.find((r) => r.name === name && r.category === '大地图')
+  if (region) return '大地图'
+  if (name === '自定义') return '自定义'
+  return getCategoryPrefix(name) ?? name
 })
 
 /** 当前主类下的子名列表（去除 category 前缀） */
 const subNames = computed<string[]>(() => {
   const cat = currentCategory.value
-  if (!cat) return []
+  if (!cat || cat === '自定义') return []
   const names = regionsByCategory.value[cat] ?? []
-  // 对于 大地图/自定义，子名为空（整个 name 就是 category）
-  if (cat === '大地图' || cat === '自定义') return []
-  // 提取 "-" 后的子名
   return names
-    .map((n) => {
-      const idx = n.indexOf('-')
-      return idx > 0 ? n.substring(idx + 1) : n
-    })
-    .filter((v, i, arr) => arr.indexOf(v) === i) // 去重
+    .map((n) => stripCategoryPrefix(n))
+    .filter((v, i, arr) => arr.indexOf(v) === i)
 })
 
-/** 是否有子名可选（大地图/自定义无） */
 const hasSubNames = computed<boolean>(() => subNames.value.length > 0)
 
-/** 当前子名（从 currentRegionName 解析） */
 const currentSubName = computed<string>(() => {
   const name = configStore.currentRegionName
   if (!name) return ''
-  if (name === '大地图' || name === '自定义') return ''
-  const idx = name.indexOf('-')
-  return idx > 0 ? name.substring(idx + 1) : ''
+  if (name === '自定义') return ''
+  return getCategoryPrefix(name) !== null ? stripCategoryPrefix(name) : ''
 })
 
-/** 拼接完整 region name */
-function buildRegionName(category: string, subName: string): string {
-  if (category === '大地图' || category === '自定义') return category
-  if (!subName) return category
-  return `${category}-${subName}`
-}
-
-/** 主类切换：选第一个子名（或直接使用 category） */
-async function onCategoryChange(event: Event) {
-  const target = event.target as HTMLSelectElement
-  const category = target.value
-  const subs = (regionsByCategory.value[category] ?? [])
-    .map((n) => {
-      if (category === '大地图' || category === '自定义') return ''
-      const idx = n.indexOf('-')
-      return idx > 0 ? n.substring(idx + 1) : n
-    })
-    .filter((v, i, arr) => v && arr.indexOf(v) === i)
-  const sub = subs[0] ?? ''
-  const fullName = buildRegionName(category, sub)
-  configStore.currentRegionName = fullName
-  try {
-    await settingsStore.update('last_region', fullName)
-  } catch (e) {
-    console.error('[ConfigPanel] 更新 last_region 失败:', e)
-  }
-  // 切换到大地图/自定义时固定滚动模式为0次
-  if (category === '大地图' || category === '自定义') {
-    configStore.currentScrollModeName = '0次'
-    try {
-      await settingsStore.update('last_scroll_mode', '0次')
-    } catch (e) {
-      console.error('[ConfigPanel] 更新 last_scroll_mode 失败:', e)
+/** 大地图子地图列表（四号谷地 / 武陵 / 自定义） */
+const largeMapSubMaps = computed<string[]>(() => {
+  const set = new Set<string>()
+  for (const r of configStore.regions) {
+    if (r.category === '大地图' && r.sub_map) {
+      set.add(r.sub_map)
     }
   }
-}
+  const list = [...set]
+  // 末尾追加"自定义"选项
+  if (!list.includes('自定义')) list.push('自定义')
+  return list
+})
 
-/** 子名切换 */
-async function onSubNameChange(event: Event) {
-  const target = event.target as HTMLSelectElement
-  const sub = target.value
-  const fullName = buildRegionName(currentCategory.value, sub)
-  configStore.currentRegionName = fullName
-  try {
-    await settingsStore.update('last_region', fullName)
-  } catch (e) {
-    console.error('[ConfigPanel] 更新 last_region 失败:', e)
-  }
-}
+const currentLargeMapSubMap = computed<string>(() => {
+  if (settingsStore.settings?.last_large_map_custom) return '自定义'
+  const name = configStore.currentRegionName
+  const region = configStore.regions.find((r) => r.name === name && r.category === '大地图')
+  return region?.sub_map ?? ''
+})
 
-// ---------------------------------------------------------------------------
-// 大地图/自定义模式判断（固定滚动次数，不可切换）
-// ---------------------------------------------------------------------------
+const isLargeMapCustom = computed<boolean>(() => {
+  return currentCategory.value === '大地图' && !!settingsStore.settings?.last_large_map_custom
+})
+
+const largeMapAreas = computed<string[]>(() => {
+  const sm = currentLargeMapSubMap.value
+  if (!sm) return []
+  return configStore.regions
+    .filter((r) => r.category === '大地图' && r.sub_map === sm)
+    .map((r) => r.name)
+})
+
+const currentLargeMapArea = computed<string>(() => {
+  if (currentCategory.value !== '大地图') return ''
+  if (isLargeMapCustom.value) return ''
+  return configStore.currentRegionName
+})
+
+/** 大地图/自定义：固定滚动次数，不可切换 */
 const isStaticMode = computed<boolean>(() => {
   const cat = currentCategory.value
   return cat === '自定义' || cat === '大地图'
 })
 
-/** 网格是否可编辑：自定义 或 大地图 */
+/** 网格是否可编辑：自定义 / 大地图自定义 */
 const isGridEditable = computed<boolean>(() => {
-  const cat = currentCategory.value
-  return cat === '自定义' || cat === '大地图'
+  return currentCategory.value === '自定义' || isLargeMapCustom.value
 })
 
-// ---------------------------------------------------------------------------
-// 网格大小（仅自定义/大地图可编辑）
-// ---------------------------------------------------------------------------
+/** 持久化 setting 项，统一捕获错误 */
+async function persistSetting<K extends AppSettingKey>(key: K, value: AppSettings[K]) {
+  try {
+    await settingsStore.update(key, value)
+  } catch (e) {
+    console.error(`[ConfigPanel] 更新 ${key} 失败:`, e)
+  }
+}
+
+async function onCategoryChange(event: Event) {
+  const target = event.target as HTMLSelectElement
+  const category = target.value
+
+  if (category === '大地图') {
+    await selectLargeMapFirstArea()
+    configStore.currentScrollModeName = '0次'
+    await persistSetting('last_scroll_mode', '0次')
+    return
+  }
+
+  // 基建/自定义：选第一个子名
+  const subs = (regionsByCategory.value[category] ?? [])
+    .map((n) => {
+      if (category === '自定义') return ''
+      return stripCategoryPrefix(n)
+    })
+    .filter((v, i, arr) => v && arr.indexOf(v) === i)
+  const fullName = buildRegionName(category, subs[0] ?? '')
+  configStore.currentRegionName = fullName
+  await persistSetting('last_region', fullName)
+  // 自定义固定滚动模式为0次
+  if (category === '自定义') {
+    configStore.currentScrollModeName = '0次'
+    await persistSetting('last_scroll_mode', '0次')
+  }
+}
+
+/** 大地图模式：选第一个子地图的第一个区域；若已是大地图自定义模式且当前区域合法则保留 */
+async function selectLargeMapFirstArea() {
+  const isCustom = !!settingsStore.settings?.last_large_map_custom
+  const currentName = configStore.currentRegionName
+  if (isCustom) {
+    const isValid = configStore.regions.some(
+      (r) => r.name === currentName && r.category === '大地图',
+    )
+    if (isValid) return
+  }
+  const firstSubMap = largeMapSubMaps.value.find((s) => s !== '自定义') ?? ''
+  const area = configStore.regions.find(
+    (r) => r.category === '大地图' && r.sub_map === firstSubMap,
+  )?.name
+  if (area) {
+    configStore.currentRegionName = area
+    await persistSetting('last_region', area)
+  }
+}
+
+async function onSubNameChange(event: Event) {
+  const target = event.target as HTMLSelectElement
+  const sub = target.value
+  const fullName = buildRegionName(currentCategory.value, sub)
+  configStore.currentRegionName = fullName
+  await persistSetting('last_region', fullName)
+}
+
+/** 大地图子地图切换：选该子地图下第一个区域，"自定义"则进入大地图自定义模式 */
+async function onLargeMapSubMapChange(event: Event) {
+  const target = event.target as HTMLSelectElement
+  const subMap = target.value
+  if (subMap === '自定义') {
+    await persistSetting('last_large_map_custom', true)
+    return
+  }
+  await persistSetting('last_large_map_custom', false)
+  const area = configStore.regions.find(
+    (r) => r.category === '大地图' && r.sub_map === subMap,
+  )?.name
+  if (area) {
+    configStore.currentRegionName = area
+    await persistSetting('last_region', area)
+  }
+}
+
+async function onLargeMapAreaChange(event: Event) {
+  const target = event.target as HTMLSelectElement
+  const area = target.value
+  configStore.currentRegionName = area
+  await persistSetting('last_region', area)
+}
+
 const localGridRows = ref<number>(0)
 const localGridCols = ref<number>(0)
 
 const gridRows = computed<number>(() => {
   if (isGridEditable.value) {
+    // 大地图自定义：使用 last_rows，默认 2
+    if (isLargeMapCustom.value) {
+      return localGridRows.value || (settingsStore.settings?.last_rows ?? 2)
+    }
     return localGridRows.value || (settingsStore.settings?.last_rows ?? 0)
   }
   return configStore.currentRegion?.grid_rows ?? 0
@@ -263,19 +357,23 @@ const gridRows = computed<number>(() => {
 
 const gridCols = computed<number>(() => {
   if (isGridEditable.value) {
+    // 大地图自定义：使用 last_cols，默认 2
+    if (isLargeMapCustom.value) {
+      return localGridCols.value || (settingsStore.settings?.last_cols ?? 2)
+    }
     return localGridCols.value || (settingsStore.settings?.last_cols ?? 0)
   }
   return configStore.currentRegion?.grid_cols ?? 0
 })
 
-// 监听 currentRegion 变化，重置本地编辑值
+// 监听 currentRegion 变化，重置本地编辑值（仅基建自定义时跟随 currentRegion）
 watch(
   () => configStore.currentRegion,
   (r) => {
-    if (r && isGridEditable.value) {
+    if (r && isGridEditable.value && !isLargeMapCustom.value) {
       localGridRows.value = r.grid_rows
       localGridCols.value = r.grid_cols
-    } else {
+    } else if (!isLargeMapCustom.value) {
       localGridRows.value = 0
       localGridCols.value = 0
     }
@@ -283,53 +381,52 @@ watch(
   { immediate: true },
 )
 
-// ---------------------------------------------------------------------------
-// 滚动模式切换
-// ---------------------------------------------------------------------------
+// 进入大地图自定义时确保 last_rows/last_cols 默认为 2×2
+watch(
+  isLargeMapCustom,
+  async (custom) => {
+    if (!custom) return
+    const cur = settingsStore.settings
+    if (!cur) return
+    if (!cur.last_rows || cur.last_rows < 1) await persistSetting('last_rows', 2)
+    if (!cur.last_cols || cur.last_cols < 1) await persistSetting('last_cols', 2)
+    // 重置本地编辑值，使其回落到 last_rows/last_cols
+    localGridRows.value = 0
+    localGridCols.value = 0
+  },
+  { immediate: true },
+)
+
 async function onScrollModeSelect(event: Event) {
   const target = event.target as HTMLSelectElement
   const name = target.value
   configStore.currentScrollModeName = name
-  try {
-    await settingsStore.update('last_scroll_mode', name)
-  } catch (e) {
-    console.error('[ConfigPanel] 更新 last_scroll_mode 失败:', e)
-  }
+  await persistSetting('last_scroll_mode', name)
 }
 
-// ---------------------------------------------------------------------------
-// 网格大小编辑（仅自定义/大地图）
-// ---------------------------------------------------------------------------
 async function onGridRowsInput(event: Event) {
   if (!isGridEditable.value) return
-  const target = event.target as HTMLInputElement
-  let num = parseInt(target.value, 10)
-  if (Number.isNaN(num)) return
-  if (num < 1) num = 1
-  if (num > 100) num = 100
+  const num = clampGridNum((event.target as HTMLInputElement).value)
+  if (num === null) return
   localGridRows.value = num
-  try {
-    await settingsStore.update('last_rows', num)
-  } catch (e) {
-    console.error('[ConfigPanel] 更新 last_rows 失败:', e)
-  }
+  await persistSetting('last_rows', num)
   await saveGridEdit()
 }
 
 async function onGridColsInput(event: Event) {
   if (!isGridEditable.value) return
-  const target = event.target as HTMLInputElement
-  let num = parseInt(target.value, 10)
-  if (Number.isNaN(num)) return
-  if (num < 1) num = 1
-  if (num > 100) num = 100
+  const num = clampGridNum((event.target as HTMLInputElement).value)
+  if (num === null) return
   localGridCols.value = num
-  try {
-    await settingsStore.update('last_cols', num)
-  } catch (e) {
-    console.error('[ConfigPanel] 更新 last_cols 失败:', e)
-  }
+  await persistSetting('last_cols', num)
   await saveGridEdit()
+}
+
+/** 网格输入解析：1-100 之间整数，否则返回 null */
+function clampGridNum(raw: string): number | null {
+  const num = parseInt(raw, 10)
+  if (Number.isNaN(num)) return null
+  return Math.max(1, Math.min(100, num))
 }
 
 /** 保存网格编辑到数据库（仅更新 grid_rows/grid_cols，保留其他字段） */
@@ -352,25 +449,13 @@ async function saveGridEdit() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// 输出格式与 JPG 质量控制
-// ---------------------------------------------------------------------------
 async function onFormatChange(value: 'JPG' | 'PNG') {
-  try {
-    await settingsStore.update('output_format', value)
-  } catch (e) {
-    console.error('[ConfigPanel] 更新输出格式失败:', e)
-  }
+  await persistSetting('output_format', value)
 }
 
 async function onJpgQualityChange(value: number) {
   if (Number.isNaN(value)) return
-  const clamped = Math.max(1, Math.min(100, value))
-  try {
-    await settingsStore.update('jpg_quality', clamped)
-  } catch (e) {
-    console.error('[ConfigPanel] 更新 JPG 质量失败:', e)
-  }
+  await persistSetting('jpg_quality', Math.max(1, Math.min(100, value)))
 }
 </script>
 
@@ -501,10 +586,5 @@ async function onJpgQualityChange(value: number) {
   background: var(--accent);
   cursor: pointer;
   border: 1px solid var(--bg-primary);
-}
-
-.quality-slider:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 </style>

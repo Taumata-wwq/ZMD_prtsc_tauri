@@ -23,21 +23,15 @@ impl std::fmt::Display for AppError {
 
 impl std::error::Error for AppError {}
 
-impl From<std::io::Error> for AppError {
-    fn from(e: std::io::Error) -> Self {
-        Self::new(e.to_string(), "IO_ERROR")
-    }
-}
-
 impl From<rusqlite::Error> for AppError {
     fn from(e: rusqlite::Error) -> Self {
         Self::new(e.to_string(), "SQLITE_ERROR")
     }
 }
 
-impl From<anyhow::Error> for AppError {
-    fn from(e: anyhow::Error) -> Self {
-        Self::new(e.to_string(), "ANYHOW_ERROR")
+impl From<windows::core::Error> for AppError {
+    fn from(e: windows::core::Error) -> Self {
+        Self::new(e.to_string(), "WINDOWS_ERROR")
     }
 }
 

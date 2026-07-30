@@ -1,7 +1,7 @@
+use crate::error::{AppError, AppResult};
 use std::sync::Mutex;
-use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
-// windows 0.58: GetClientRect / GetWindowRect 位于 Win32::UI::WindowsAndMessaging
-// ClientToScreen 位于 Win32::Graphics::Gdi（返回 BOOL 而非 Result）
+use windows::core::BOOL;
+use windows::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClientRect, GetWindowTextLengthW,
@@ -16,8 +16,6 @@ pub struct WindowInfo {
     pub hwnd: isize,
     pub left: i32,
     pub top: i32,
-    pub width: i32,
-    pub height: i32,
 }
 
 /// 客户区矩形（屏幕坐标）
@@ -33,7 +31,7 @@ pub struct ClientRect {
 static CACHED_HWND: Mutex<Option<isize>> = Mutex::new(None);
 
 /// 查找标题包含 "Endfield" 的游戏窗口
-pub fn find_endfield_window() -> anyhow::Result<Option<WindowInfo>> {
+pub fn find_endfield_window() -> AppResult<Option<WindowInfo>> {
     // 先尝试缓存的句柄
     if let Some(cached) = *CACHED_HWND.lock().unwrap() {
         if let Some(info) = validate_and_get_info(cached)? {
@@ -62,9 +60,9 @@ pub fn find_endfield_window() -> anyhow::Result<Option<WindowInfo>> {
 }
 
 /// 验证句柄有效性并获取窗口信息
-fn validate_and_get_info(hwnd_raw: isize) -> anyhow::Result<Option<WindowInfo>> {
+fn validate_and_get_info(hwnd_raw: isize) -> AppResult<Option<WindowInfo>> {
     let hwnd = HWND(hwnd_raw as *mut _);
-    if !unsafe { IsWindow(hwnd) }.as_bool() {
+    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
         *CACHED_HWND.lock().unwrap() = None;
         return Ok(None);
     }
@@ -75,8 +73,6 @@ fn validate_and_get_info(hwnd_raw: isize) -> anyhow::Result<Option<WindowInfo>> 
         hwnd: hwnd_raw,
         left: rect.left,
         top: rect.top,
-        width: rect.right - rect.left,
-        height: rect.bottom - rect.top,
     }))
 }
 
@@ -97,10 +93,9 @@ fn get_window_title(hwnd: HWND) -> Option<String> {
 }
 
 /// 获取窗口矩形（屏幕坐标）
-fn get_window_rect(hwnd: HWND) -> anyhow::Result<RECT> {
+fn get_window_rect(hwnd: HWND) -> AppResult<RECT> {
     let mut rect = RECT::default();
     unsafe {
-        // windows 0.58: GetWindowRect 返回 windows_core::Result，可用 `?`
         GetWindowRect(hwnd, &mut rect)?;
     }
     Ok(rect)
@@ -108,14 +103,10 @@ fn get_window_rect(hwnd: HWND) -> anyhow::Result<RECT> {
 
 /// 枚举所有顶层窗口，回调返回 true 表示找到目标（停止枚举）
 ///
-/// 由于 `EnumWindows` 的回调必须是 C ABI 函数指针，无法直接捕获闭包，
-/// 这里通过 `LPARAM` 传递堆上的 `EnumContext` 裸指针：
-/// - 调用方将闭包装箱到 `Box`，用 `Box::into_raw` 取得裸指针
-/// - `enum_proc` 内用裸指针借用上下文，调用 callback
-/// - 枚举结束后用 `Box::from_raw` 恢复所有权并取出结果
-///
-/// callback 接收 HWND，返回 bool：true 表示找到目标停止枚举，false 表示继续。
-fn enumerate_windows<F>(callback: F) -> anyhow::Result<Option<HWND>>
+/// `EnumWindows` 回调须为 C ABI 函数指针，无法直接捕获闭包。
+/// 这里通过 LPARAM 传递堆上 `EnumContext` 裸指针：调用方 `Box::into_raw` 取指针，
+/// `enum_proc` 借用上下文调用 callback，结束后 `Box::from_raw` 恢复所有权。
+fn enumerate_windows<F>(callback: F) -> AppResult<Option<HWND>>
 where
     F: FnMut(HWND) -> bool,
 {
@@ -125,22 +116,18 @@ where
         found: Option<HWND>,
     }
 
-    /// EnumWindows 回调（C ABI，泛型单态化为每个具体的 F 生成独立函数）
-    ///
-    /// 通过 LPARAM 恢复 `EnumContext` 裸指针并调用 callback。
-    /// callback 返回 true 表示找到目标，停止枚举。
+    /// EnumWindows 回调（C ABI，泛型单态化）
+    /// 通过 LPARAM 恢复 `EnumContext` 裸指针并调用 callback，true 表示停止枚举。
     extern "system" fn enum_proc<F>(hwnd: HWND, lparam: LPARAM) -> BOOL
     where
         F: FnMut(HWND) -> bool,
     {
-        // 从 LPARAM 恢复上下文裸指针
         let ctx_ptr = lparam.0 as *mut EnumContext<F>;
         // 安全：上下文由调用方 Box 持有，EnumWindows 同步返回前指针有效
         let ctx = unsafe { &mut *ctx_ptr };
         if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
             return BOOL(1); // 跳过不可见窗口，继续枚举
         }
-        // 调用 callback：返回 true 表示找到目标，停止枚举
         if (ctx.callback)(hwnd) {
             ctx.found = Some(hwnd);
             return BOOL(0);
@@ -148,40 +135,49 @@ where
         BOOL(1)
     }
 
-    // 将上下文装箱到堆上，取得裸指针传给 EnumWindows
     let ctx_box = Box::new(EnumContext {
         callback,
         found: None,
     });
     let ctx_ptr = Box::into_raw(ctx_box);
 
-    unsafe {
-        let _ = EnumWindows(Some(enum_proc::<F>), LPARAM(ctx_ptr as isize));
+    let result = unsafe { EnumWindows(Some(enum_proc::<F>), LPARAM(ctx_ptr as isize)) };
+
+    // 无论 EnumWindows 是否成功都必须回收 Box，避免内存泄漏
+    let ctx = unsafe { Box::from_raw(ctx_ptr) };
+
+    // 优先检查 ctx.found：回调返回 FALSE 主动停止枚举时 EnumWindows 会返回 Err
+    if let Some(hwnd) = ctx.found {
+        return Ok(Some(hwnd));
     }
 
-    // 用 Box::from_raw 恢复所有权并取出结果
-    let ctx = unsafe { Box::from_raw(ctx_ptr) };
-    Ok(ctx.found)
+    if let Err(err) = result {
+        return Err(AppError::new(
+            format!("枚举窗口失败: {}", err),
+            "ENUM_WINDOWS_FAILED",
+        ));
+    }
+
+    Ok(None)
 }
 
 /// 获取客户区矩形（屏幕坐标）
-/// 对应原 Python `_get_window_client_rect`
-pub fn get_client_rect(hwnd_raw: isize) -> anyhow::Result<ClientRect> {
+pub fn get_client_rect(hwnd_raw: isize) -> AppResult<ClientRect> {
     let hwnd = HWND(hwnd_raw as *mut _);
     let mut client_rect = RECT::default();
     unsafe {
-        // windows 0.58: GetClientRect 返回 windows_core::Result，可用 `?`
         GetClientRect(hwnd, &mut client_rect)?;
     }
     let client_w = client_rect.right - client_rect.left;
     let client_h = client_rect.bottom - client_rect.top;
 
-    // 客户区左上角的屏幕坐标
     let mut top_left = windows::Win32::Foundation::POINT { x: 0, y: 0 };
     unsafe {
-        // windows 0.58: ClientToScreen 返回 BOOL（非 Result），需用 .as_bool() 检查
         if !ClientToScreen(hwnd, &mut top_left).as_bool() {
-            anyhow::bail!("ClientToScreen 转换失败（窗口可能已销毁）");
+            return Err(AppError::new(
+                "ClientToScreen 转换失败（窗口可能已销毁）",
+                "CLIENT_TO_SCREEN_FAILED",
+            ));
         }
     }
 
@@ -193,29 +189,27 @@ pub fn get_client_rect(hwnd_raw: isize) -> anyhow::Result<ClientRect> {
     })
 }
 
-/// 激活窗口（不置顶）
-///
-/// 不再使用 HWND_TOPMOST 置顶游戏窗口，避免遮挡其他窗口。
-/// 仅恢复最小化 + 激活到前台，让游戏获取焦点即可。
-pub fn activate_window() -> anyhow::Result<()> {
+/// 激活窗口（不置顶）：恢复最小化 + 激活到前台让游戏获取焦点，不用 HWND_TOPMOST 避免遮挡其他窗口
+pub fn activate_window() -> AppResult<()> {
     let hwnd_raw = (*CACHED_HWND.lock().unwrap())
-        .ok_or_else(|| anyhow::anyhow!("未找到游戏窗口句柄"))?;
+        .ok_or_else(|| AppError::new("未找到游戏窗口句柄", "WINDOW_FIND_FAILED"))?;
     let hwnd = HWND(hwnd_raw as *mut _);
 
-    if !unsafe { IsWindow(hwnd) }.as_bool() {
+    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
         *CACHED_HWND.lock().unwrap() = None;
-        anyhow::bail!("游戏窗口句柄无效");
+        return Err(AppError::new(
+            "游戏窗口句柄无效",
+            "WINDOW_HANDLE_INVALID",
+        ));
     }
 
     unsafe {
-        // 如果窗口最小化，先恢复
         let _ = ShowWindow(hwnd, SW_RESTORE);
         let _ = ShowWindow(hwnd, SW_SHOW);
-        // 激活到前台（不置顶）
         let _ = SetForegroundWindow(hwnd);
     }
 
-    // 等待 500ms 让窗口完成激活（比原 1.5s 短，避免过长延迟）
+    // 等待 500ms 让窗口完成激活（避免过长延迟）
     std::thread::sleep(std::time::Duration::from_millis(500));
 
     Ok(())

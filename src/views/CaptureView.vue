@@ -1,19 +1,17 @@
 <template>
   <div class="capture-view">
-    <!-- 左侧配置面板：宽度可拖拽调节（持久化到 localStorage） -->
+    <!-- 左侧配置面板：宽度持久化到 localStorage -->
     <aside
       class="capture-left"
       :style="{ width: leftWidth + 'px', flexBasis: leftWidth + 'px' }"
     >
       <ConfigPanel />
-      <!-- 左下方使用说明 -->
       <div class="capture-hint">
         <div class="hint-title">{{ t('capture.hint.title') }}</div>
         <pre class="hint-text">{{ t('capture.hint.items') }}</pre>
       </div>
     </aside>
 
-    <!-- 中部分割线：可拖拽调节左右占比 -->
     <div
       class="splitter"
       @mousedown="onSplitterMouseDown"
@@ -21,42 +19,24 @@
       <div class="splitter-handle" />
     </div>
 
-    <!-- 右侧主体：上中下三段 -->
     <section class="capture-right">
-      <!-- 上部：截图按钮 + 截图信息 + 开始/停止按钮 -->
       <header class="capture-toolbar">
-        <!-- 左侧：截图完成后才出现的三个按钮 -->
+        <!-- 截图完成后才出现的按钮（保存裁剪 + 清除选区） -->
         <div class="toolbar-left">
           <button
             v-if="previewUrl"
             type="button"
             class="action-btn btn-primary"
             :disabled="cropperBusy"
-            :title="t('capture.exportCropped')"
-            @click="onExportCropped"
+            :title="t('capture.saveCropped')"
+            @click="onSaveCropped"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M6 2v14a2 2 0 0 0 2 2h14" />
               <path d="M18 22V8a2 2 0 0 0-2-2H2" />
             </svg>
-            <span>{{ t('capture.exportCropped') }}</span>
-          </button>
-          <button
-            v-if="previewUrl"
-            type="button"
-            class="action-btn btn-primary"
-            :disabled="cropperBusy"
-            :title="t('capture.exportOriginal')"
-            @click="onExportOriginal"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            <span>{{ t('capture.exportOriginal') }}</span>
+            <span>{{ t('capture.saveCropped') }}</span>
           </button>
           <button
             v-if="previewUrl"
@@ -76,7 +56,6 @@
           </button>
         </div>
 
-        <!-- 右侧：开始/停止按钮 -->
         <div class="toolbar-right">
           <button
             type="button"
@@ -85,11 +64,9 @@
             :title="captureStore.isRunning ? t('capture.stop') + ' (F3)' : t('capture.start') + ' (F3)'"
             @click="onToggle"
           >
-            <!-- 开始：三角图标 -->
             <svg v-if="!captureStore.isRunning" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <path d="M8 5v14l11-7z" />
             </svg>
-            <!-- 停止：方块图标 -->
             <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <rect x="6" y="6" width="12" height="12" rx="1" />
             </svg>
@@ -98,23 +75,18 @@
         </div>
       </header>
 
-      <!-- 中部：预览区域 -->
-      <!-- 取消实时显示，截图过程中仅显示进度，全部完成后统一拼接 -->
       <div class="capture-preview">
         <PreviewCropper
           v-if="previewUrl"
           ref="cropperRef"
           :image-url="previewUrl"
-          :source="captureStore.currentSource"
           :session-id="captureStore.currentSessionId"
           @exported="onExported"
         />
-        <!-- 截图进行中显示进度信息 -->
         <div v-else-if="captureStore.isRunning" class="preview-processing">
           <div class="spinner" />
           <p class="processing-text">{{ captureStore.progress?.current ?? 0 }} / {{ captureStore.progress?.total ?? 0 }}</p>
         </div>
-        <!-- 处理中显示加载指示器 -->
         <div v-else-if="captureStore.isProcessing" class="preview-processing">
           <div class="spinner" />
           <p class="processing-text">{{ t('capture.processing') }}</p>
@@ -134,59 +106,34 @@
 </template>
 
 <script setup lang="ts">
-// =============================================================================
-// CaptureView
-//
-// 主界面：
-//   - 预览区域直接集成裁剪交互（PreviewCropper）
-//   - PreviewCropper 支持拖拽移动选区、四角调整大小、滚轮同步缩放
-//   - 保存时不弹对话框，直接保存到 output_folder
-// =============================================================================
-import { ref, computed, onMounted } from 'vue'
+// CaptureView：预览区集成 PreviewCropper（拖拽/缩放/四角调整），保存直接写入 screenshot_folder
+import { ref, computed } from 'vue'
 import ConfigPanel from '@/components/capture/ConfigPanel.vue'
 import PreviewCropper from '@/components/capture/PreviewCropper.vue'
 import { useCaptureStore } from '@/stores/capture.store'
 import { useConfigStore } from '@/stores/config.store'
 import { useSettingsStore } from '@/stores/settings.store'
+import { useHistoryStore } from '@/stores/history.store'
 import { useI18n } from '@/composables/useI18n'
 import { useSplitter } from '@/composables/useSplitter'
 
 const captureStore = useCaptureStore()
 const configStore = useConfigStore()
 const settingsStore = useSettingsStore()
+const historyStore = useHistoryStore()
 const { t } = useI18n()
 
-// ---------------------------------------------------------------------------
-// PreviewCropper 引用（用于调用暴露的 exportCropped/exportOriginal/clearSelection）
-// ---------------------------------------------------------------------------
 const cropperRef = ref<InstanceType<typeof PreviewCropper> | null>(null)
 
 /** PreviewCropper 正在导出时禁用按钮 */
 const cropperBusy = computed<boolean>(() => cropperRef.value?.isExporting ?? false)
 
-// ---------------------------------------------------------------------------
-// 预览图 URL（直接使用 store 中的 previewImageUrl，无需 ArrayBuffer → Blob 转换）
-// store 中 onCapturePreviewReady 回调已用 convertFileSrc 将磁盘路径转为 URL
-// ---------------------------------------------------------------------------
+// store 中 previewImageUrl 已用 convertFileSrc 转为可访问 URL
 const previewUrl = computed(() => captureStore.previewImageUrl)
 
-// ---------------------------------------------------------------------------
-// 初始化事件监听（store 幂等，重复调用安全）
-// ---------------------------------------------------------------------------
-onMounted(async () => {
-  try {
-    await captureStore.init()
-  } catch (e) {
-    console.error('[CaptureView] captureStore.init 失败:', e)
-  }
-})
-
-// ---------------------------------------------------------------------------
-// 按钮事件（开始/停止合并为单一按钮 F3）
-// ---------------------------------------------------------------------------
+// 开始/停止合并为单一按钮（F3 热键）
 async function onToggle() {
   if (captureStore.isRunning) {
-    // 当前运行中 → 停止
     try {
       await captureStore.stop()
     } catch (e) {
@@ -194,7 +141,6 @@ async function onToggle() {
     }
     return
   }
-  // 当前未运行 → 开始
   const region = configStore.currentRegionName
   if (!region) {
     console.warn('[CaptureView] 未选择区域，无法开始截图')
@@ -205,10 +151,12 @@ async function onToggle() {
     console.warn('[CaptureView] 未选择滚动模式，无法开始截图')
     return
   }
-  // 仅自定义类别需要显式传入 rows/cols（其他类别由 Rust 端按区域配置解析）
+  // 自定义类别与大地图自定义模式需要显式传 rows/cols，其余由 Rust 端按区域配置解析
   const isCustom = configStore.currentRegion?.category === '自定义'
-  const rows = isCustom ? settingsStore.settings?.last_rows : undefined
-  const cols = isCustom ? settingsStore.settings?.last_cols : undefined
+  const isLargeMapCustom = !!settingsStore.settings?.last_large_map_custom
+  const needManualGrid = isCustom || isLargeMapCustom
+  const rows = needManualGrid ? (settingsStore.settings?.last_rows ?? 2) : undefined
+  const cols = needManualGrid ? (settingsStore.settings?.last_cols ?? 2) : undefined
   try {
     await captureStore.start(region, scrollMode, rows, cols)
   } catch (e) {
@@ -216,38 +164,21 @@ async function onToggle() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// PreviewCropper 事件处理
-// ---------------------------------------------------------------------------
-// 导出后不清空预览，直到下次开始截图才清理（在 captureStore.start 中处理）
-/** 导出成功后仅记录日志，不清除预览 */
-function onExported(payload: { path: string; cropped: boolean }) {
-  console.log('[CaptureView] 导出成功:', payload.path)
+/** 保存成功后刷新历史记录，使历史页路径与按钮状态同步 */
+function onExported(_payload: { path: string; cropped: boolean }) {
+  void historyStore.load().catch((e) => {
+    console.error('[CaptureView] 刷新历史记录失败:', e)
+  })
 }
 
-/** 调用 PreviewCropper 暴露的导出裁剪方法 */
-function onExportCropped() {
-  cropperRef.value?.exportCropped()
+function onSaveCropped() {
+  cropperRef.value?.saveCropped()
 }
 
-/** 调用 PreviewCropper 暴露的导出原图方法 */
-function onExportOriginal() {
-  cropperRef.value?.exportOriginal()
-}
-
-/** 调用 PreviewCropper 暴露的清除选区方法 */
 function onClearSelection() {
   cropperRef.value?.clearSelection()
 }
 
-// ---------------------------------------------------------------------------
-// 左右分割线拖拽调节（逻辑由 useSplitter composable 提供）
-//
-// 设计：
-//   - 默认左侧 200px，调整范围 150-400px
-//   - 拖拽时实时更新 leftWidth，结束时持久化到 localStorage
-//   - mounted/unmount/deactivate 时自动恢复与清理
-// ---------------------------------------------------------------------------
 const { width: leftWidth, onMouseDown: onSplitterMouseDown } = useSplitter({
   storageKey: 'capture_left_width',
   defaultWidth: 200,
@@ -311,7 +242,6 @@ const { width: leftWidth, onMouseDown: onSplitterMouseDown } = useSplitter({
   overflow-y: auto;
 }
 
-/* 左下方使用说明 */
 .capture-hint {
   flex-shrink: 0;
   border-top: 1px solid var(--border);
@@ -372,7 +302,6 @@ const { width: leftWidth, onMouseDown: onSplitterMouseDown } = useSplitter({
   opacity: 0.8;
 }
 
-/* 右侧主体 */
 .capture-right {
   flex: 1;
   display: flex;
@@ -381,7 +310,6 @@ const { width: leftWidth, onMouseDown: onSplitterMouseDown } = useSplitter({
   overflow: hidden;
 }
 
-/* 顶部工具栏：按钮组 + 截图信息 */
 .capture-toolbar {
   display: flex;
   align-items: center;
@@ -460,7 +388,6 @@ const { width: leftWidth, onMouseDown: onSplitterMouseDown } = useSplitter({
   color: #ffffff;
 }
 
-/* 中部预览区域 */
 .capture-preview {
   flex: 1;
   display: flex;

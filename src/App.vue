@@ -11,6 +11,9 @@
     <!-- 顶部 TitleBar：拖拽 + 窗口控制 -->
     <TitleBar />
 
+    <!-- 全局应用内弹窗（替代 web 自带 prompt/confirm） -->
+    <ModalDialog />
+
     <!-- 主体：左侧 48px 图标导航 + 右侧视图 -->
     <div class="app-body">
       <aside class="sidebar">
@@ -18,11 +21,11 @@
           v-for="item in navItems"
           :key="item.key"
           class="nav-btn"
-          :class="{ active: currentView === item.key }"
+          :class="{ active: uiStore.currentView === item.key }"
           type="button"
           :title="t(item.titleKey)"
-          :aria-current="currentView === item.key"
-          @click="currentView = item.key"
+          :aria-current="uiStore.currentView === item.key"
+          @click="uiStore.setView(item.key)"
         >
           <span class="nav-icon" v-html="item.iconSvg" />
         </button>
@@ -39,10 +42,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { computed, watch, onMounted, onUnmounted } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import TitleBar from './components/titlebar/TitleBar.vue'
+import ModalDialog from './components/ModalDialog.vue'
 import CaptureView from './views/CaptureView.vue'
 import HistoryView from './views/HistoryView.vue'
 import DataManageView from './views/DataManageView.vue'
@@ -50,50 +54,35 @@ import SettingsView from './views/SettingsView.vue'
 import { useSettingsStore } from '@/stores/settings.store'
 import { useConfigStore } from '@/stores/config.store'
 import { useCaptureStore } from '@/stores/capture.store'
+import { useUiStore, type ViewKey } from '@/stores/ui.store'
 import { useI18n } from '@/composables/useI18n'
+import { formatDateTime } from '@/utils/datetime'
+import { NAV_ICONS } from '@/constants/navIcons'
 import type { CaptureLog } from '@/types'
-
-// 数据管理位于历史下方
-type ViewKey = 'capture' | 'history' | 'data' | 'settings'
-
-const theme = ref<'dark' | 'light'>('dark')
-const currentView = ref<ViewKey>('capture')
 
 const settingsStore = useSettingsStore()
 const configStore = useConfigStore()
 const captureStore = useCaptureStore()
+const uiStore = useUiStore()
 const { t } = useI18n()
 
+/** 主题：单一数据源从 settingsStore 派生，TitleBar/App.vue 共享同一状态 */
+const theme = computed<'dark' | 'light'>(() => settingsStore.settings?.theme ?? 'dark')
+
+// 主题由 watch 自动同步到 <html data-theme>
+watch(theme, (next) => {
+  if (next) document.documentElement.dataset.theme = next
+}, { immediate: true })
+
 const navItems: { key: ViewKey; titleKey: string; iconSvg: string }[] = [
-  {
-    key: 'capture',
-    titleKey: 'nav.capture',
-    iconSvg:
-      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>',
-  },
-  {
-    key: 'history',
-    titleKey: 'nav.history',
-    iconSvg:
-      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></svg>',
-  },
-  // 数据管理（位于历史下方）
-  {
-    key: 'data',
-    titleKey: 'nav.data',
-    iconSvg:
-      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg>',
-  },
-  {
-    key: 'settings',
-    titleKey: 'nav.settings',
-    iconSvg:
-      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
-  },
+  { key: 'capture', titleKey: 'nav.capture', iconSvg: NAV_ICONS.capture },
+  { key: 'history', titleKey: 'nav.history', iconSvg: NAV_ICONS.history },
+  { key: 'data', titleKey: 'nav.data', iconSvg: NAV_ICONS.data },
+  { key: 'settings', titleKey: 'nav.settings', iconSvg: NAV_ICONS.settings },
 ]
 
 const currentComponent = computed(() => {
-  switch (currentView.value) {
+  switch (uiStore.currentView) {
     case 'capture':
       return CaptureView
     case 'history':
@@ -112,16 +101,15 @@ function pushLog(level: CaptureLog['level'], message: string) {
   const log: CaptureLog = {
     level,
     message,
-    timestamp: new Date().toLocaleString('zh-CN', { hour12: false }),
+    timestamp: formatDateTime(new Date(), 'zh'),
   }
   captureStore.logs.push(log)
 }
 
 onMounted(async () => {
-  // 启动日志（与原 Python 项目的 startup_msgs 对齐）
   pushLog('info', '[ZMD] 终末地截图工具启动中...')
 
-  // 1. 加载设置（theme / output_format / last_region / last_scroll_mode 等）
+  // 加载设置（theme / output_format / last_region / last_scroll_mode 等）
   try {
     await settingsStore.load()
   } catch (e) {
@@ -129,14 +117,9 @@ onMounted(async () => {
     pushLog('error', `[ZMD] 加载设置失败: ${e}`)
   }
 
-  // 2. 应用主题（立即同步到 DOM，避免闪烁）
-  if (settingsStore.settings) {
-    theme.value = settingsStore.settings.theme
-    document.documentElement.dataset.theme = settingsStore.settings.theme
-  }
   pushLog('info', '[ZMD] 数据库已初始化')
 
-  // 3. 加载配置（区域列表 + 滚动模式列表）
+  // 加载区域列表与滚动模式列表
   try {
     await configStore.load()
   } catch (e) {
@@ -144,7 +127,7 @@ onMounted(async () => {
     pushLog('error', `[ZMD] 加载配置失败: ${e}`)
   }
 
-  // 4. 恢复上次选择（last_region / last_scroll_mode 覆盖 configStore 默认值）
+  // 恢复上次选择：last_region / last_scroll_mode 覆盖 configStore 默认值
   if (settingsStore.settings) {
     if (settingsStore.settings.last_region) {
       configStore.currentRegionName = settingsStore.settings.last_region
@@ -154,16 +137,10 @@ onMounted(async () => {
     }
   }
 
-  pushLog(
-    'info',
-    `[ZMD] 已加载 ${configStore.regions.length} 个区域配置`,
-  )
-  pushLog(
-    'info',
-    `[ZMD] 已加载 ${configStore.scrollModes.length} 个滚动模式`,
-  )
+  pushLog('info', `[ZMD] 已加载 ${configStore.regions.length} 个区域配置`)
+  pushLog('info', `[ZMD] 已加载 ${configStore.scrollModes.length} 个滚动模式`)
 
-  // 5. 初始化截图 store（监听 capture:progress / capture:log / capture:status / capture:preview-ready）
+  // 初始化截图 store（监听 capture:progress / capture:log / capture:status / capture:preview-ready）
   try {
     await captureStore.init()
   } catch (e) {
@@ -171,18 +148,17 @@ onMounted(async () => {
     pushLog('error', `[ZMD] 截图 store 初始化失败: ${e}`)
   }
 
-  // 6. 监听全局热键事件（开始/停止合并为 F3）
+  // 监听全局热键事件（开始/停止合并为 F3）
   try {
     unlistenFns.push(
       await listen<string>('hotkey', (e) => {
         switch (e.payload) {
           case 'F3': {
-            // 合并按钮：根据 isRunning 状态切换开始/停止
+            // isRunning=true → 停止；否则按当前区域与滚动模式开始
             if (captureStore.isRunning) {
               captureStore.stop().catch((err) => pushLog('error', `[ZMD] 停止截图失败: ${err}`))
               break
             }
-            // 开始截图：需要当前区域与滚动模式已选定
             const region = configStore.currentRegionName
             if (!region) {
               pushLog('warn', '[ZMD] 未选择区域，无法开始截图')
@@ -193,8 +169,7 @@ onMounted(async () => {
               pushLog('warn', '[ZMD] 未选择滚动模式，无法开始截图')
               break
             }
-            // 仅"自定义"区域使用 last_rows/last_cols 覆盖网格（用户可编辑行列数）
-            // 预设区域（武陵/谷地/大地图）由 Rust 端按 region_config 的 grid_rows/grid_cols 决定
+            // 仅"自定义"区域使用 last_rows/last_cols 覆盖网格；预设区域由 Rust 端按 region_config 决定
             const isCustomGrid = region === '自定义'
             const rows = isCustomGrid ? settingsStore.settings?.last_rows : undefined
             const cols = isCustomGrid ? settingsStore.settings?.last_cols : undefined
@@ -215,9 +190,8 @@ onMounted(async () => {
   }
 
   pushLog('info', '[ZMD] 应用就绪')
-  console.log('[ZMD] 应用初始化完成')
 
-  // 所有初始化完成后显示窗口（避免启动时白屏）
+  // 初始化完成后显示窗口，避免启动时白屏
   try {
     await getCurrentWindow().show()
   } catch (e) {

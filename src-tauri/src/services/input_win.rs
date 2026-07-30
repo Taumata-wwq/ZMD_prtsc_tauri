@@ -1,8 +1,5 @@
-//! Windows 原生输入模拟（SendInput）
-//!
-//! 使用 Win32 SendInput API 实现鼠标移动、中键拖拽和滚轮滚动，
-//! 通过 MOUSEEVENTF_VIRTUALDESK 标志确保多显示器下坐标正确。
-//! 游戏仅响应中键拖拽。
+//! Win32 平台实现层：使用 SendInput API 实现鼠标移动、中键拖拽和滚轮滚动。
+//! 通过 MOUSEEVENTF_VIRTUALDESK 标志确保多显示器下坐标正确。游戏仅响应中键拖拽。
 
 use std::mem;
 use std::thread;
@@ -28,7 +25,7 @@ fn normalize_absolute(x: i32, y: i32) -> (i32, i32) {
 }
 
 /// 通过 SendInput 移动鼠标到绝对坐标（使用虚拟桌面映射）
-pub fn sendinput_move_abs(x: i32, y: i32) {
+pub(crate) fn sendinput_move_abs(x: i32, y: i32) {
     let (nx, ny) = normalize_absolute(x, y);
     let mi = MOUSEINPUT {
         dx: nx,
@@ -48,7 +45,7 @@ pub fn sendinput_move_abs(x: i32, y: i32) {
 }
 
 /// 按下鼠标中键
-pub fn sendinput_middle_down() {
+pub(crate) fn sendinput_middle_down() {
     let mi = MOUSEINPUT {
         dx: 0,
         dy: 0,
@@ -67,7 +64,7 @@ pub fn sendinput_middle_down() {
 }
 
 /// 松开鼠标中键
-pub fn sendinput_middle_up() {
+pub(crate) fn sendinput_middle_up() {
     let mi = MOUSEINPUT {
         dx: 0,
         dy: 0,
@@ -85,10 +82,7 @@ pub fn sendinput_middle_up() {
     }
 }
 
-/// 平滑插值移动鼠标到目标位置
-///
-/// 在 (start_x, start_y) → (end_x, end_y) 之间按 16ms 间隔（约 60Hz）生成
-/// 中间点，逐点调用 `sendinput_move_abs`，模拟真实鼠标移动轨迹。
+/// 平滑插值移动鼠标：按 16ms 间隔（约 60Hz）生成中间点逐点发送，模拟真实移动轨迹
 fn interpolate_move_abs(start_x: i32, start_y: i32, end_x: i32, end_y: i32, duration_secs: f64) {
     if duration_secs <= 0.0 {
         sendinput_move_abs(end_x, end_y);
@@ -111,9 +105,7 @@ fn interpolate_move_abs(start_x: i32, start_y: i32, end_x: i32, end_y: i32, dura
     }
 }
 
-/// SendInput + 中键拖拽
-///
-/// 使用 MOUSEEVENTF_VIRTUALDESK 标志确保多显示器下坐标正确。
+/// SendInput + 中键拖拽（使用 MOUSEEVENTF_VIRTUALDESK 确保多显示器坐标正确）
 pub fn drag_middle_sendinput(
     start_x: i32,
     start_y: i32,
@@ -137,14 +129,7 @@ pub fn drag_middle_sendinput(
     sendinput_middle_up();
 }
 
-/// SendInput + 中键往返拖拽（用于滚轮后刷新画面）
-///
-/// 复刻 Python 原版 do_scroll 末尾的拖拽逻辑：
-/// 1. 移动到起点（终点位置 end）
-/// 2. 按下中键
-/// 3. 拖到 start（起点位置）
-/// 4. 拖回 end（终点位置）— 拖回去步骤
-/// 5. 松开中键
+/// SendInput + 中键往返拖拽（用于滚轮后刷新画面）：end → start → end
 pub fn drag_middle_sendinput_roundtrip(
     start_x: i32,
     start_y: i32,
@@ -152,7 +137,7 @@ pub fn drag_middle_sendinput_roundtrip(
     end_y: i32,
     drag_duration: f64,
 ) {
-    // 1. 移动到起点（对应 Python 的 end 位置）
+    // 1. 移动到起点
     sendinput_move_abs(start_x, start_y);
     thread::sleep(Duration::from_millis(30));
 
@@ -160,10 +145,10 @@ pub fn drag_middle_sendinput_roundtrip(
     sendinput_middle_down();
     thread::sleep(Duration::from_millis(30));
 
-    // 3. 拖到终点（对应 Python 的 start 位置）
+    // 3. 拖到终点
     interpolate_move_abs(start_x, start_y, end_x, end_y, drag_duration);
 
-    // 4. 拖回起点（对应 Python 再 moveTo end_x, end_y）
+    // 4. 拖回起点
     interpolate_move_abs(end_x, end_y, start_x, start_y, drag_duration);
 
     // 5. 松开中键
@@ -172,7 +157,7 @@ pub fn drag_middle_sendinput_roundtrip(
 }
 
 /// 获取当前鼠标光标位置（屏幕坐标）
-pub fn get_cursor_pos() -> (i32, i32) {
+fn get_cursor_pos() -> (i32, i32) {
     let mut point = POINT { x: 0, y: 0 };
     unsafe {
         let _ = GetCursorPos(&mut point);
@@ -180,18 +165,14 @@ pub fn get_cursor_pos() -> (i32, i32) {
     (point.x, point.y)
 }
 
-/// 平滑移动鼠标到目标位置（从当前位置线性插值）
-///
-/// 通过 GetCursorPos 获取起点，按 16ms 间隔（约 60Hz）插值移动到终点，
-/// 模拟真实鼠标移动轨迹。
-pub fn sendinput_move_smooth(x: i32, y: i32, duration_secs: f64) {
+/// 平滑移动鼠标到目标位置（从当前位置线性插值，模拟真实移动轨迹）
+pub(crate) fn sendinput_move_smooth(x: i32, y: i32, duration_secs: f64) {
     let (cur_x, cur_y) = get_cursor_pos();
     interpolate_move_abs(cur_x, cur_y, x, y, duration_secs);
 }
 
-/// 发送滚轮事件（pyautogui 兼容语义：负数向下，正数向上）
-///
-/// 每次发送 1 个 WHEEL_DELTA（120）的滚动量，逐个发送以兼容游戏输入处理。
+/// 发送滚轮事件（负数向下，正数向上）
+/// 每次发送 1 个 WHEEL_DELTA（120），逐个发送以兼容游戏输入处理。
 pub fn sendinput_scroll(amount: i32) {
     let direction = if amount < 0 { -1 } else { 1 };
     let count = amount.abs();
@@ -199,7 +180,7 @@ pub fn sendinput_scroll(amount: i32) {
         let mi = MOUSEINPUT {
             dx: 0,
             dy: 0,
-            mouseData: (direction as i32 * WHEEL_DELTA as i32) as u32,
+            mouseData: (direction * WHEEL_DELTA as i32) as u32,
             dwFlags: MOUSEEVENTF_WHEEL,
             time: 0,
             dwExtraInfo: 0,

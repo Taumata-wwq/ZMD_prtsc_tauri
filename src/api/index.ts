@@ -1,22 +1,17 @@
-// Tauri Command 调用封装
+/** Tauri Command 调用封装 */
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type {
   RegionConfig,
   ScrollMode,
   CaptureSession,
-  CaptureStatus,
   CaptureProgress,
   CaptureLog,
   CaptureStatusEvent,
   CropBox,
-  DerivedFromBase,
   AllCountsResult,
 } from '@/types'
 
-// -----------------------------------------------------------------------------
-// 配置 CRUD
-// -----------------------------------------------------------------------------
 export async function listRegions(): Promise<RegionConfig[]> {
   return invoke<RegionConfig[]>('list_regions')
 }
@@ -67,46 +62,41 @@ export async function deriveRegionFromTarget(
   })
 }
 
-// -----------------------------------------------------------------------------
-// 设置
-// -----------------------------------------------------------------------------
 export async function setSetting(key: string, value: string): Promise<void> {
   return invoke<void>('set_setting', { key, value })
 }
 
 export async function getAllSettings(): Promise<Record<string, string>> {
-  // Rust 返回 HashMap<String, String>，TS 端等价于 Record<string, string>
   return invoke<Record<string, string>>('get_all_settings')
 }
 
-export async function setManySettings(entries: Record<string, string>): Promise<void> {
-  return invoke<void>('set_many_settings', { entries })
+export async function resetData(includeHistory: boolean): Promise<void> {
+  return invoke<void>('reset_data', { includeHistory })
 }
 
-// -----------------------------------------------------------------------------
-// 历史
-// -----------------------------------------------------------------------------
-export async function listSessions(limit?: number): Promise<CaptureSession[]> {
-  return invoke<CaptureSession[]>('list_sessions', { limit })
+export async function listSessions(): Promise<CaptureSession[]> {
+  return invoke<CaptureSession[]>('list_sessions')
 }
 
-/** 清空所有历史记录 */
-export async function clearHistory(): Promise<void> {
-  return invoke<void>('clear_history')
+export async function deleteSession(
+  sessionId: number,
+  deleteOriginal: boolean,
+  deleteScreenshot: boolean,
+): Promise<void> {
+  return invoke<void>('delete_session', {
+    sessionId,
+    deleteOriginal,
+    deleteScreenshot,
+  })
 }
 
-// -----------------------------------------------------------------------------
-// 截图
-// -----------------------------------------------------------------------------
 export async function startCapture(
   region: string,
   scrollMode: string,
   rows?: number,
   cols?: number,
 ): Promise<number> {
-  // Rust 返回 session_id（i64），前端用于后续 export_image 回写
-  // Tauri 默认将 Rust 端 snake_case 参数名转换为 camelCase 期望：
-  //   region_name → regionName, scroll_mode → scrollMode
+  // Rust 返回 session_id（i64），前端用于 export_image 回写
   return invoke<number>('start_capture', {
     regionName: region,
     scrollMode,
@@ -119,27 +109,22 @@ export async function stopCapture(): Promise<void> {
   return invoke<void>('stop_capture')
 }
 
-export async function getCaptureStatus(): Promise<CaptureStatus> {
-  return invoke<CaptureStatus>('get_capture_status')
-}
-
-/**
- * 拉取预览图 PNG 字节流。返回 byteLength === 0 表示暂无预览。
- */
+/** 拉取预览图 PNG 字节流。返回 byteLength === 0 表示暂无预览 */
 export async function getPreviewImage(): Promise<ArrayBuffer> {
   return invoke<ArrayBuffer>('get_preview_image')
 }
 
-/**
- * 拉取预览图磁盘路径。拼接后的 PNG 已保存到磁盘，导出时直接传路径避免大数据传输。
- */
+/** 拉取预览图磁盘路径（拼接后已保存到磁盘，导出时直接传路径避免大数据传输） */
 export async function getPreviewPath(): Promise<string> {
   return invoke<string>('get_preview_path')
 }
 
-/**
- * 导出图像（传 sourcePath 路径而非 data 字节流）
- */
+/** 设置预览图磁盘路径（用于从历史记录加载原图重新编辑） */
+export async function setPreviewPath(path: string): Promise<void> {
+  return invoke<void>('set_preview_path', { path })
+}
+
+/** 导出图像（传 sourcePath 路径而非 data 字节流） */
 export async function exportImage(
   sourcePath: string,
   crop: CropBox | null,
@@ -160,20 +145,14 @@ export async function exportImage(
   })
 }
 
-// =============================================================================
-// 事件监听
-// =============================================================================
-/** 截图进度事件 */
 export async function onCaptureProgress(cb: (e: CaptureProgress) => void): Promise<UnlistenFn> {
   return listen<CaptureProgress>('capture:progress', (event) => cb(event.payload))
 }
 
-/** 截图日志事件 */
 export async function onCaptureLog(cb: (e: CaptureLog) => void): Promise<UnlistenFn> {
   return listen<CaptureLog>('capture:log', (event) => cb(event.payload))
 }
 
-/** 截图状态变更事件 */
 export async function onCaptureStatus(cb: (e: CaptureStatusEvent) => void): Promise<UnlistenFn> {
   return listen<CaptureStatusEvent>('capture:status', (event) => cb(event.payload))
 }
@@ -188,30 +167,22 @@ export async function onCaptureProcessing(cb: (count: number) => void): Promise<
   return listen<number>('capture:processing', (event) => cb(event.payload))
 }
 
-// 聚合导出
 export const api = {
-  // 配置
   listRegions,
   upsertRegion,
   deleteRegion,
   listScrollModes,
   deriveAllCounts,
   deriveRegionFromTarget,
-
-  // 设置
   setSetting,
   getAllSettings,
-  setManySettings,
-
-  // 历史
+  resetData,
   listSessions,
-  clearHistory,
-
-  // 截图
+  deleteSession,
   startCapture,
   stopCapture,
-  getCaptureStatus,
   getPreviewImage,
   getPreviewPath,
+  setPreviewPath,
   exportImage,
 }

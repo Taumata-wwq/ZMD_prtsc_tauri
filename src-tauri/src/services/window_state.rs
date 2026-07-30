@@ -8,7 +8,7 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::time::sleep;
 
 use crate::error::{AppError, AppResult};
-use crate::models::setting::WindowState;
+use crate::models::window_state::WindowState;
 use crate::services::persistence::DbState;
 
 /// 防抖延迟：500ms 内的连续事件只保存最后一次
@@ -20,9 +20,7 @@ fn map_window_err(e: tauri::Error) -> AppError {
 }
 
 /// 检查屏幕坐标点是否在任何显示器的工作区域内
-///
-/// 使用 Win32 `MonitorFromPoint` + `GetMonitorInfoW` 判断。
-/// 如果该点不在任何显示器上，返回 false（应重新居中窗口）。
+/// 使用 Win32 `MonitorFromPoint` + `GetMonitorInfoW` 判断，不在则返回 false（应重新居中窗口）。
 fn is_point_on_screen(x: i32, y: i32) -> bool {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::Graphics::Gdi::{
@@ -50,12 +48,7 @@ fn is_point_on_screen(x: i32, y: i32) -> bool {
 }
 
 /// 启动时从数据库恢复窗口状态
-///
-/// 恢复顺序：
-/// 1. 最大化：如果上次是最大化，直接 `maximize`
-/// 2. 位置：仅当 x/y 都为 `Some` 且在屏幕内时恢复，否则居中
-/// 3. 大小：在 width/height 都为 `Some` 时恢复
-/// 4. 置顶：独立于最大化，根据 `always_on_top` 设置
+/// 恢复顺序：最大化 → 位置（屏幕内则恢复，否则居中）→ 大小 → 置顶（独立于最大化）。
 pub fn restore_window_state(app: &AppHandle) -> AppResult<()> {
     let db = app.state::<DbState>();
     let state = db.load_window_state()?;
@@ -70,7 +63,7 @@ pub fn restore_window_state(app: &AppHandle) -> AppResult<()> {
         // 检查保存的位置是否在屏幕内，不在则居中
         let pos_valid = matches!((state.x, state.y), (Some(x), Some(y)) if is_point_on_screen(x, y));
         if pos_valid {
-            // pos_valid 已确认 x/y 为 Some，但 defensive unwrap_or(0) 防 NULL 字段 panic
+            // pos_valid 已确认 x/y 为 Some，unwrap_or(0) 防 NULL 字段 panic
             let _ = window.set_position(Position::Physical(PhysicalPosition::new(
                 state.x.unwrap_or(0),
                 state.y.unwrap_or(0),
@@ -88,26 +81,17 @@ pub fn restore_window_state(app: &AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-/// 初始化窗口事件监听
-///
-/// 在 lib.rs setup 中调用。监听：
-/// - `Moved` / `Resized`：触发防抖保存（500ms trailing debounce）
-/// - `CloseRequested`：立即保存（不防抖），通过 `tauri::async_runtime::spawn` 异步执行
-///
-/// 注意：`Destroyed` 事件时窗口 API 可能已失效，因此不监听。
+/// 初始化窗口事件监听（在 lib.rs setup 中调用）
+/// `Moved`/`Resized` 触发防抖保存；`CloseRequested` 立即保存。不监听 `Destroyed`（API 可能已失效）。
 pub fn init_window_state_listener(app: &AppHandle) -> AppResult<()> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| AppError::new("主窗口未找到", "WINDOW_ERROR"))?;
 
     let app_handle = app.clone();
-    // 防抖共享状态：记录最后一次事件的时间戳
     let last_event: Arc<TokioMutex<Option<Instant>>> = Arc::new(TokioMutex::new(None));
 
     window.on_window_event(move |event| {
-        // 使用 matches! 宏避免 &WindowEvent 的 borrow 模式匹配问题
-        // 注意：tauri::WindowEvent::CloseRequested 是 struct variant（{ api: .. }），
-        // 不能用 tuple variant 语法 CloseRequested(_) 匹配
         if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
             let app = app_handle.clone();
             let last = last_event.clone();
@@ -127,13 +111,7 @@ pub fn init_window_state_listener(app: &AppHandle) -> AppResult<()> {
 }
 
 /// 防抖保存窗口状态（trailing debounce）
-///
-/// 策略：
-/// 1. 进入时记录自己的时间戳到共享 `last`
-/// 2. 等待 500ms
-/// 3. 检查 `last` 是否仍是自己：是则执行保存；否（被后续事件覆盖）则跳过
-///
-/// 这样保证：连续高频事件中，只有最后一次会触发实际保存。
+/// 进入时记录时间戳到共享 `last`，等待 500ms 后检查是否仍是最后一次事件，是则保存。
 async fn save_debounced(app: AppHandle, last: Arc<TokioMutex<Option<Instant>>>) {
     let my_time = Instant::now();
     {
@@ -143,7 +121,6 @@ async fn save_debounced(app: AppHandle, last: Arc<TokioMutex<Option<Instant>>>) 
 
     sleep(DEBOUNCE_INTERVAL).await;
 
-    // 若自己仍是最后一次事件，则执行保存；否则跳过（让后续事件负责保存）
     let is_latest = {
         let guard = last.lock().await;
         matches!(*guard, Some(t) if t == my_time)
@@ -154,12 +131,7 @@ async fn save_debounced(app: AppHandle, last: Arc<TokioMutex<Option<Instant>>>) 
     }
 }
 
-/// 保存当前窗口状态到数据库（同步）
-///
-/// 读取窗口当前位置、大小、最大化、置顶状态，构造 `WindowState` 并保存。
-/// 由于 `DbState::save_window_state` 是同步的，本函数也是同步的。
-///
-/// 错误：若窗口 API 调用失败或数据库写入失败，返回 `AppError`。
+/// 保存当前窗口状态到数据库（同步，因 `DbState::save_window_state` 同步）
 fn save_current_window_state(app: &AppHandle) -> AppResult<()> {
     let window = app
         .get_webview_window("main")

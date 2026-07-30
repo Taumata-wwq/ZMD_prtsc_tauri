@@ -45,7 +45,8 @@ pub struct CaptureSession {
     pub status: String,
     pub original_path: Option<String>,
     pub exported_path: Option<String>,
-    pub crop_box: Option<String>,  // JSON string of CropBox
+    pub thumbnail_path: Option<String>,
+    pub crop_box: Option<String>,
     pub output_format: Option<String>,
     pub jpg_quality: Option<i32>,
 }
@@ -65,6 +66,7 @@ impl CaptureSession {
             status: SessionStatus::Capturing.as_str().to_string(),
             original_path: None,
             exported_path: None,
+            thumbnail_path: None,
             crop_box: None,
             output_format: None,
             jpg_quality: None,

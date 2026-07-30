@@ -1,4 +1,3 @@
-// 轻量级 i18n：字典在 src/i18n/locales/，locale 由 settings.store.language 驱动
 import { computed } from 'vue'
 import { useSettingsStore } from '@/stores/settings.store'
 import { zh } from '@/i18n/locales/zh'
@@ -22,9 +21,17 @@ export function useI18n() {
   const settingsStore = useSettingsStore()
   const locale = computed<Locale>(() => settingsStore.settings?.language ?? 'zh')
 
-  // t 为普通函数：内部访问 locale.value 会自动建立响应式依赖，
-  // 在模板/computed/watch 中调用时随 locale 变化自动更新。
-  const t = (key: string): string => translate(locale.value, key)
+  // t 为普通函数：内部访问 locale.value 自动建立响应式依赖，
+  // 在模板/computed/watch 中调用时随 locale 变化自动更新；params 替换 {key} 占位符
+  const t = (key: string, params?: Record<string, string | number>): string => {
+    let str = translate(locale.value, key)
+    if (params) {
+      for (const [k, v] of Object.entries(params)) {
+        str = str.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v))
+      }
+    }
+    return str
+  }
 
   return { t, locale }
 }

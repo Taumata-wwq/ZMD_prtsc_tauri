@@ -1,25 +1,23 @@
 <template>
   <div class="log-panel">
-    <!-- 顶部标题栏 -->
     <div class="log-header">
-      <span class="log-title">日志</span>
+      <span class="log-title">{{ t('capture.logs') }}</span>
       <div class="log-meta">
         <span class="log-count">{{ logs.length }} 条</span>
         <button
           type="button"
           class="clear-btn"
           :disabled="logs.length === 0"
-          title="清空日志"
+          :title="t('capture.clearLogs')"
           @click="onClear"
         >
-          清空
+          {{ t('capture.clearLogs') }}
         </button>
       </div>
     </div>
 
-    <!-- 日志列表 -->
     <div ref="scrollRef" class="log-body">
-      <div v-if="logs.length === 0" class="empty">暂无日志</div>
+      <div v-if="logs.length === 0" class="empty">{{ t('capture.noLogs') }}</div>
       <div
         v-for="(item, idx) in logs"
         :key="`${item.timestamp}-${idx}`"
@@ -34,12 +32,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick, onMounted } from 'vue'
+import { ref, watch, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useCaptureStore } from '@/stores/capture.store'
+import { useI18n } from '@/composables/useI18n'
 
+const { t } = useI18n()
 const captureStore = useCaptureStore()
-// 使用 storeToRefs 提取 ref，保证对 logs.value = []（替换引用）也保持响应式
 const { logs } = storeToRefs(captureStore)
 
 const scrollRef = ref<HTMLDivElement | null>(null)
@@ -55,13 +54,6 @@ watch(
   },
 )
 
-// 初始化事件监听（store 幂等）
-onMounted(() => {
-  captureStore.init().catch((e) => {
-    console.error('[LogPanel] captureStore.init 失败:', e)
-  })
-})
-
 function onClear() {
   captureStore.clearLogs()
 }
@@ -69,7 +61,7 @@ function onClear() {
 /** 格式化时间戳（保留 HH:MM:SS） */
 function formatTime(timestamp: string): string {
   if (!timestamp) return ''
-  // 兼容 ISO 字符串与已经格式化过的字符串
+  // 兼容 ISO 字符串与已格式化字符串
   const date = new Date(timestamp)
   if (Number.isNaN(date.getTime())) return timestamp
   const h = String(date.getHours()).padStart(2, '0')
